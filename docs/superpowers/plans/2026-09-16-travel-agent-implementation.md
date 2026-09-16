@@ -1116,8 +1116,10 @@ git commit -m "feat: build_itinerary node with amap data and graceful degradatio
 ### 任务 7：present_draft + 预算超支第二类中断
 
 **文件：**
-- 修改：`app/graph/nodes.py`、`app/graph/builder.py`
+- 修改：`app/graph/nodes.py`、`app/graph/builder.py`、`tests/test_interrupt_loop.py`
 - 创建：`tests/test_full_graph.py`
+
+**连带的测试同步（必须做，否则既有测试会因新路由而红）**：`route_after_build` 接入后，`tests/test_interrupt_loop.py` 的摘要件 `FakeSummarizer(make_itinerary())` 需改为 `FakeSummarizer(make_itinerary(total=2500.0))`——该测试的预算为 3000、而 `make_itinerary()` 默认总额 4000，会触发预算超支中断，导致其「信息齐全直达 END/response_text」的断言无法成立。`builder.py` 的 `ALLOWED_MSGPACK_MODULES` 保持任务 6 修复后的两条（`TravelRequest` + `Itinerary`），不要退回单条目版。
 
 - [ ] **步骤 1：编写失败的测试 tests/test_full_graph.py**
 
@@ -1291,7 +1293,10 @@ from app.graph.nodes import (
 )
 from app.graph.state import GraphState
 
-ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [("app.graph.state", "TravelRequest")]
+ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
+    ("app.graph.state", "TravelRequest"),
+    ("app.graph.state", "Itinerary"),
+]
 
 
 def make_async_sqlite_checkpointer(db_path: str) -> AsyncSqliteSaver:
