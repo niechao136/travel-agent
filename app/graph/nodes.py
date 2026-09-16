@@ -58,3 +58,37 @@ def make_extract_and_merge(extractor):
         return {"request": merge_request(state["request"], update)}
 
     return extract_and_merge
+
+
+MCP_TOOL_FAILURE = "部分地图数据获取失败，行程未经核实，基于通用知识生成，请人工核实：{errors}"
+
+
+def make_build_itinerary(summarizer, mcp):
+    """调高德 MCP 取真实数据 → 交给 summarizer 生成结构化行程。
+
+    任一 MCP 调用失败都不抛异常：记录 mcp_errors、data_verified=False 并附 warnings。
+    """
+
+    async def build_itinerary(state: GraphState) -> dict[str, Any]:
+        request = state["request"]
+        errors: list[str] = []
+
+        async def safe(name: str, coro) -> str:
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001 —— 兜底要求：任何工具失败不中断流程
+                errors.append(f"{name} failed: {exc}")
+                return ""
+
+        weather = await safe("weather", mcp.get_weather(request.destination))
+        geo = await safe("geo", mcp.geocode(request.destination))
+        pois = await safe("poi", mcp.search_pois("景点", request.destination))
+
+        context_text = f"【地理编码】\n{geo}\n\n【天气】\n{weather}\n\n【景点 POI】\n{pois}"
+        itinerary = await summarizer(context_text, request)
+        itinerary.data_verified = not errors
+        if errors:
+            itinerary.warnings.append(MCP_TOOL_FAILURE.format(errors="; ".join(errors)))
+        return {"itinerary": itinerary, "mcp_errors": errors}
+
+    return build_itinerary

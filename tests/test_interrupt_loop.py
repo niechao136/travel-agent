@@ -4,7 +4,7 @@ from langgraph.types import Command
 
 from app.graph.builder import build_graph
 from app.graph.state import TravelRequest, TravelRequestUpdate
-from tests.fakes import FakeExtractor, sqlite_checkpointer
+from tests.fakes import FakeExtractor, FakeMCP, FakeSummarizer, make_itinerary, sqlite_checkpointer
 
 
 async def test_multi_round_interrupt_merges_incrementally():
@@ -15,7 +15,12 @@ async def test_multi_round_interrupt_merges_incrementally():
             TravelRequestUpdate(budget=3000.0),
         ]
     )
-    graph = build_graph(extractor=ex, checkpointer=sqlite_checkpointer())
+    graph = build_graph(
+        extractor=ex,
+        summarizer=FakeSummarizer(make_itinerary()),
+        mcp=FakeMCP(),
+        checkpointer=sqlite_checkpointer(),
+    )
     config = {"configurable": {"thread_id": "t-loop"}}
 
     r1 = await graph.ainvoke(
@@ -33,4 +38,5 @@ async def test_multi_round_interrupt_merges_incrementally():
     r3 = await graph.ainvoke(Command(resume="预算3000"), config)
     assert r3["request"].budget == 3000.0
     assert r3["request"].end_date == date(2026, 10, 3)
-    assert "__interrupt__" not in r3  # 信息齐全，v1 图直达 END
+    assert "__interrupt__" not in r3  # 信息齐全 → build_itinerary → END
+    assert r3["itinerary"].data_verified is True  # 图确实走到了取真实数据的节点
