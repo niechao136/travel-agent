@@ -284,7 +284,7 @@ class GraphState(TypedDict):
     request: TravelRequest
     missing_fields: list[str]
     messages: list[dict[str, str]]
-    itinerary: "Itinerary | None"
+    itinerary: dict | None
     response_text: str
     mcp_errors: list[str]
     budget_adjust_count: int
@@ -313,7 +313,7 @@ def missing_fields(request: TravelRequest) -> list[str]:
     return result
 ```
 
-注：`Itinerary` 在任务 6 追加到本文件；此处 `"Itinerary | None"` 为前向引用字符串，先保证导入不报错（TypedDict 注解惰性求值，`from __future__ import annotations` 已生效）。
+注：`itinerary` 用 `dict | None`（与 PLAN.md 第 4 节的原始状态设计一致）。不要写成未定义类型的注解（如 `Itinerary | None`）：langgraph 构造 `StateGraph(GraphState)` 时会用 `get_type_hints()` 运行时解析全部注解（`TYPE_CHECKING` 导入与字符串引号都挡不住），未定义名会直接 `NameError`。任务 6 定义 `Itinerary` 后，再把它升级回 `Itinerary | None`。
 
 - [ ] **步骤 4：运行验证通过**
 
@@ -977,7 +977,7 @@ async def test_build_itinerary_degrades_when_mcp_fails():
 
 - [ ] **步骤 3：实现**
 
-`app/graph/state.py` 追加（同时把 `GraphState.itinerary` 的前向引用替换为真实类型）：
+`app/graph/state.py` 追加（**同时把 `GraphState.itinerary` 从 `dict | None` 升级为 `Itinerary | None`**——任务 2 使用的是 dict，因为当时 Itinerary 尚未定义而 langgraph 会运行时解析注解）：
 
 ```python
 from typing import Literal
