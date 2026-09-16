@@ -41,7 +41,10 @@ async def test_budget_overrun_interrupts_and_resume_budget(checkpointer):
     r1 = await graph.ainvoke(FULL_INPUT, CONFIG)
     payload = r1["__interrupt__"][0].value
     assert payload["type"] == "budget_overrun"
+    # 超出额与预算额必须分清：总花费 4000 超预算 3000，超 1000 元
     assert "超出预算" in payload["question"]
+    assert "超出预算 1000 元" in payload["question"]
+    assert "预算 3000 元" in payload["question"]
 
     r2 = await graph.ainvoke(Command(resume="budget=5000"), CONFIG)
     assert r2["request"].budget == 5000.0
@@ -55,5 +58,17 @@ async def test_budget_overrun_gives_up_after_two_adjusts(checkpointer):
     r2 = await graph.ainvoke(Command(resume="days=+1"), CONFIG)  # 第一次调整，仍超支 → 再中断
     assert r2["__interrupt__"][0].value["type"] == "budget_overrun"
     r3 = await graph.ainvoke(Command(resume="keep"), CONFIG)  # 达调整上限 → 强制展示
+    assert "__interrupt__" not in r3
+    assert r3["response_text"].startswith("# 杭州")
+
+
+async def test_budget_overrun_invalid_resume_is_ignored(checkpointer):
+    """resume 文本无法解析（如 budget=五千）时按 keep 处理，不得让任务永久 failed。"""
+    graph = make_graph(FakeSummarizer(make_itinerary(total=4000.0)), checkpointer)
+    await graph.ainvoke(FULL_INPUT, CONFIG)
+    r2 = await graph.ainvoke(Command(resume="budget=五千"), CONFIG)  # 非法值 → 等价 keep
+    assert r2["request"].budget == 3000.0  # 预算未被破坏
+    assert r2["__interrupt__"][0].value["type"] == "budget_overrun"  # 仍超支，再次中断
+    r3 = await graph.ainvoke(Command(resume="keep"), CONFIG)
     assert "__interrupt__" not in r3
     assert r3["response_text"].startswith("# 杭州")

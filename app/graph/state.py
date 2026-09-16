@@ -54,10 +54,23 @@ def merge_request(current: TravelRequest, update: TravelRequestUpdate) -> Travel
 
 
 def missing_fields(request: TravelRequest) -> list[str]:
+    """返回缺失/无效的必填字段，顺序固定为 destination, start_date, end_date, budget。
+
+    除 None 外，还要把语义无效值视作缺失（让用户重答，避免下游 ZeroDivisionError / days<=0）：
+    - budget 非正（<= 0）；
+    - end_date 早于 start_date（日期倒挂）。
+    """
     result: list[str] = []
     for field in REQUIRED_FIELDS:
         value = getattr(request, field)
-        if value is None:
+        if field == "budget":
+            if value is None or value <= 0:
+                result.append(field)
+        elif field == "end_date":
+            reversed_dates = request.start_date is not None and value is not None and value < request.start_date
+            if value is None or reversed_dates:
+                result.append(field)
+        elif value is None:
             result.append(field)
     return result
 

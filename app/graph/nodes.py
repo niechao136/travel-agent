@@ -83,8 +83,13 @@ def make_build_itinerary(summarizer, mcp):
         weather = await safe("weather", mcp.get_weather(request.destination))
         geo = await safe("geo", mcp.geocode(request.destination))
         pois = await safe("poi", mcp.search_pois("景点", request.destination))
+        restaurants = await safe("poi_restaurant", mcp.search_pois("餐厅", request.destination))
+        hotels = await safe("poi_hotel", mcp.search_pois("酒店", request.destination))
 
-        context_text = f"【地理编码】\n{geo}\n\n【天气】\n{weather}\n\n【景点 POI】\n{pois}"
+        context_text = (
+            f"【地理编码】\n{geo}\n\n【天气】\n{weather}\n\n【景点 POI】\n{pois}"
+            f"\n\n【餐厅 POI】\n{restaurants}\n\n【酒店 POI】\n{hotels}"
+        )
         itinerary = await summarizer(context_text, request)
         itinerary.data_verified = not errors
         if errors:
@@ -106,6 +111,24 @@ TYPE_LABELS: dict[str, str] = {
 }
 
 
+def _apply_budget_adjust(updated, req, text: str) -> None:
+    """解析 resume 文本并就地更新 request（budget=/days=+N）；无法解析时按 keep 语义处理。
+
+    容错要点：用户可能回复 `budget=五千` 之类非法值，直接 float()/int() 会抛 ValueError，
+    使任务永久 failed。此处吞掉解析错误、保持原值（等价 keep），由调整计数上限兜底退出。
+    """
+    if text.startswith("budget="):
+        try:
+            updated.budget = float(text.split("=", 1)[1])
+        except ValueError:
+            pass
+    elif text.startswith("days="):
+        try:
+            updated.end_date = req.end_date + timedelta(days=int(text.split("=", 1)[1].lstrip("+")))
+        except ValueError:
+            pass
+
+
 def make_ask_budget_adjust():
     """第二类中断：预估超支时询问调整方式。
 
@@ -115,7 +138,8 @@ def make_ask_budget_adjust():
     async def ask_budget_adjust(state: GraphState) -> dict[str, Any]:
         it, req = state["itinerary"], state["request"]
         question = (
-            f"预估总花费 {it.total_est_cost_cny:.0f} 元，已超出预算 {req.budget:.0f} 元。"
+            f"预估总花费 {it.total_est_cost_cny:.0f} 元，"
+            f"超出预算 {it.total_est_cost_cny - req.budget:.0f} 元（预算 {req.budget:.0f} 元）。"
             "回复 keep 维持本方案；budget=新预算（如 budget=5000）；days=+1 延长行程。"
         )
         reply = interrupt(
@@ -128,10 +152,7 @@ def make_ask_budget_adjust():
         )
         updated = req.model_copy()
         text = str(reply).strip()
-        if text.startswith("budget="):
-            updated.budget = float(text.split("=", 1)[1])
-        elif text.startswith("days="):
-            updated.end_date = req.end_date + timedelta(days=int(text.split("=", 1)[1].lstrip("+")))
+        _apply_budget_adjust(updated, req, text)
         return {"request": updated, "budget_adjust_count": state.get("budget_adjust_count", 0) + 1}
 
     return ask_budget_adjust

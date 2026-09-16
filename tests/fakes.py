@@ -31,24 +31,26 @@ class FakeSummarizer:
 
 
 class FakeMCP:
+    """记录每次调用的 (方法名, 关键字) 元组：三次 search_pois 需按关键字区分。"""
+
     def __init__(self, fail: bool = False):
         self.fail = fail
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, str]] = []
 
     async def get_weather(self, city: str) -> str:
-        self.calls.append("get_weather")
+        self.calls.append(("get_weather", city))
         if self.fail:
             raise RuntimeError("mcp down")
         return "晴 26℃"
 
     async def geocode(self, address: str) -> str:
-        self.calls.append("geocode")
+        self.calls.append(("geocode", address))
         if self.fail:
             raise RuntimeError("mcp down")
         return "120.15,30.27"
 
     async def search_pois(self, keywords: str, city: str) -> str:
-        self.calls.append("search_pois")
+        self.calls.append(("search_pois", keywords))
         if self.fail:
             raise RuntimeError("mcp down")
         return "1. 西湖 (120.15,30.25)\n2. 灵隐寺 (120.10,30.24)"

@@ -36,11 +36,21 @@ def test_expired_token_rejected(tmp_path):
 
 
 def test_offset_expired_token_rejected(tmp_path):
-    """非 UTC 偏移的过期时刻也要按真实时刻判断（字符串字典序比较会误判）。"""
+    """非 UTC 偏移的过期时刻也要按真实时刻判断（字符串字典序比较会误判）。
+
+    关键构造：过期时刻取「真实已过去 30 分钟」，再转到 UTC+13 生成本地串。
+    此时本地串（如 2026-01-02T00:30:00+13:00）在字典序上**大于** now 的 UTC 串，
+    但真实时刻更早——只有按 datetime 解析比较才能正确判为过期。
+    """
     store = make_store(tmp_path)
-    past = datetime.now(UTC) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(minutes=30)
     offset = timezone(timedelta(hours=13))
-    token = store.issue("test-caller", expires_at=past.astimezone(offset).isoformat())
+    expires_at = past.astimezone(offset).isoformat()
+    # 断言输入构造确实满足"本地串 > now 串 且 真实时刻 < now"（否则钉不住旧缺陷）
+    assert expires_at > datetime.now(UTC).isoformat()
+    assert datetime.fromisoformat(expires_at) < datetime.now(UTC)
+
+    token = store.issue("test-caller", expires_at=expires_at)
     assert store.verify(token) is None
 
 
