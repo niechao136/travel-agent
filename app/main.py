@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes.agent_card_routes import create_agent_card_routes
+from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
+from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from fastapi import FastAPI
+
+from app.a2a_adapter import TravelAgentExecutor
+from app.agent_card import build_agent_card
+from app.config import get_settings
+
+A2A_RPC_PATH = "/a2a"
+
+
+def create_app(graph=None) -> FastAPI:
+    if graph is None:
+        from app.graph.builder import default_graph
+
+        graph = default_graph()
+
+    card = build_agent_card(get_settings().public_base_url)
+    handler = DefaultRequestHandler(
+        agent_executor=TravelAgentExecutor(graph),
+        task_store=InMemoryTaskStore(),
+        agent_card=card,
+    )
+    app = FastAPI(title="travel-planner-agent")
+    add_a2a_routes_to_fastapi(
+        app,
+        agent_card_routes=create_agent_card_routes(card),
+        jsonrpc_routes=create_jsonrpc_routes(
+            handler, rpc_url=A2A_RPC_PATH, enable_v0_3_compat=True
+        ),
+    )
+    return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(create_app(), host="0.0.0.0", port=8000)

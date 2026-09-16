@@ -64,3 +64,18 @@ def build_graph(
     g.add_edge("ask_budget_adjust", "build_itinerary")
     g.add_edge("present_draft", END)
     return g.compile(checkpointer=checkpointer)
+
+
+def default_graph():
+    from app.config import get_settings
+    from app.llm import get_llm, llm_extractor, llm_summarizer
+    from app.mcp_client import AmapMCPClient
+
+    llm = get_llm()
+    mcp = AmapMCPClient(get_settings().amap_mcp_url)
+    return build_graph(
+        extractor=llm_extractor(llm),
+        summarizer=llm_summarizer(llm),
+        mcp=mcp,
+        checkpointer=make_async_sqlite_checkpointer(get_settings().checkpoint_db_path),
+    )

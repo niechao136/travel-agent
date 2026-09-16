@@ -132,3 +132,21 @@ def interrupt_result(question: str) -> dict:
             type("I", (), {"value": {"type": "missing_info", "question": question}})()
         ]
     }
+
+
+import uuid
+
+
+def send_message(text: str, task_id: str | None = None, context_id: str | None = None) -> dict:
+    """构造 1.0 协议 SendMessage JSON-RPC 请求体（需配合 A2A-Version: 1.0 header）。"""
+    msg = {
+        "messageId": uuid.uuid4().hex,
+        "role": "ROLE_USER",
+        "parts": [{"text": text}],
+    }
+    if task_id:
+        msg["taskId"] = task_id
+    if context_id:
+        msg["contextId"] = context_id
+    return {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "SendMessage",
+            "params": {"message": msg}}
