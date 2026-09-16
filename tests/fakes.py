@@ -85,7 +85,8 @@ class FakeGraph:
 
     def __init__(self, results: list[dict], paused: set[str] | None = None):
         self.results = list(results)
-        self.paused = paused or set()
+        # 保持传入对象身份：调用方可在用例中途 graph.paused.add(task_id) 模拟"仍停在中断上"
+        self.paused = paused if paused is not None else set()
         self.invocations: list[tuple] = []
 
     async def aget_state(self, config):
