@@ -595,13 +595,13 @@ def make_extract_and_merge(extractor):
         user_text = _last_user_text(state["messages"])
         if not user_text:
             return {}
-        update = await extractor(user_text, date.today().isoformat())
+        update = await extractor(user_text, datetime.now(tz=UTC).date().isoformat())
         return {"request": merge_request(state["request"], update)}
 
     return extract_and_merge
 ```
 
-（文件顶部补 `from datetime import date` 与 `from app.graph.state import merge_request`。）
+（文件顶部补 `from datetime import UTC, datetime` 与 `from app.graph.state import merge_request`。）
 
 `app/graph/builder.py`（v1：齐全分支暂接 END，任务 6/7 逐步接入 build_itinerary/present_draft）：
 
@@ -669,7 +669,7 @@ git commit -m "feat: extract_and_merge node, llm adapters and multi-round interr
 
 **文件：**
 - 创建：`app/mcp_client.py`、`scripts/amap_probe.py`、`tests/test_mcp_client.py`
-- 修改：`tests/fakes.py`（追加 FakeMCPSession）
+- 修改：无（`tests/test_mcp_client.py` 自带本地 `FakeSession`；共享假件 `FakeMCP` 属任务 6）
 
 - [ ] **步骤 1：编写失败的测试 tests/test_mcp_client.py**
 
@@ -751,8 +751,9 @@ async def test_error_result_raises_runtime_error():
 ```python
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -777,10 +778,12 @@ class AmapMCPClient:
 
     @asynccontextmanager
     async def _default_session_factory(self) -> AsyncIterator[ClientSession]:
-        async with streamable_http_client(self.url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                yield session
+        async with (
+            streamable_http_client(self.url) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            yield session
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         async with self._session_factory() as session:
@@ -817,12 +820,14 @@ from mcp.client.streamable_http import streamable_http_client
 async def main() -> None:
     load_dotenv()
     url = os.environ["AMAP_MCP_URL"]
-    async with streamable_http_client(url) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            for t in tools.tools:
-                print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
+    async with (
+        streamable_http_client(url) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        for t in tools.tools:
+            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
 
 
 if __name__ == "__main__":
@@ -834,7 +839,7 @@ if __name__ == "__main__":
 ```powershell
 uv run pytest tests/test_mcp_client.py -q
 ```
-预期：5 passed。
+预期：4 passed。
 
 配置 `.env`（真实 AMAP Key）后运行 `uv run python scripts/amap_probe.py`，确认工具清单包含 `maps_weather`/`maps_geo`/`maps_text_search`；若参数名与实现不符（如 `city`→`keywords`），以探针输出为准修正 `AmapMCPClient` 高层方法参数并重跑测试。
 
@@ -858,7 +863,7 @@ git commit -m "feat: amap mcp client over streamable http with probe script"
 `tests/fakes.py` 追加：
 
 ```python
-from app.graph.state import Itinerary
+from app.graph.state import Itinerary, TravelRequest
 
 
 class FakeSummarizer:
@@ -1894,7 +1899,7 @@ import hashlib
 import secrets
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -1903,7 +1908,7 @@ def sha256_hash(token: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
