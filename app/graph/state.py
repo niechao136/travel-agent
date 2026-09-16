@@ -33,7 +33,7 @@ class GraphState(TypedDict):
     request: TravelRequest
     missing_fields: list[str]
     messages: list[dict[str, str]]
-    itinerary: Itinerary | None
+    itinerary: dict | None
     response_text: str
     mcp_errors: list[str]
     budget_adjust_count: int
