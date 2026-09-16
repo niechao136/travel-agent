@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,7 @@ class GraphState(TypedDict):
     request: TravelRequest
     missing_fields: list[str]
     messages: list[dict[str, str]]
-    itinerary: "Itinerary | None"
+    itinerary: Itinerary | None
     response_text: str
     mcp_errors: list[str]
     budget_adjust_count: int
