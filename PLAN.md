@@ -15,7 +15,7 @@
 - **外部工具**：高德地图 MCP Server（Streamable HTTP，官方托管）
 - **协议**：A2A（Agent-to-Agent），对外暴露标准 AgentCard + JSON-RPC/HTTP 端点
 - **鉴权**：Bearer Token / 自定义 Header（见第 6 节）
-- **对话状态**：LangGraph Checkpointer（开发阶段用内存或 SQLite，需支持 `thread_id` 与 A2A 的 `task_id` 对齐）
+- **对话状态**：LangGraph Checkpointer（使用 SQLite，`langgraph-checkpoint-sqlite`；需支持 `thread_id` 与 A2A 的 `task_id` 对齐）
 
 ## 3. 功能需求
 
@@ -181,3 +181,11 @@ travel-agent/
 2. 再接入 FastAPI + AgentCard，包装成标准 A2A 服务
 3. 最后接入鉴权层
 4. 用一个简单的 A2A 测试客户端脚本，模拟"提供部分信息 → 收到 input-required → 补充信息 → resume"的完整往返，验证第 10 节的验收标准
+
+## 12. 执行计划
+
+上述规划已细化为可执行的任务级实现方案（含 TDD 步骤、完整代码与验收映射）：
+
+`docs/superpowers/plans/2026-09-16-travel-agent-implementation.md`
+
+共 11 个任务，与第 11 节的开发顺序一一对应，按任务编号顺序执行即可。
