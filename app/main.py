@@ -9,16 +9,20 @@ from fastapi import FastAPI
 
 from app.a2a_adapter import TravelAgentExecutor
 from app.agent_card import build_agent_card
+from app.auth import BearerAuthMiddleware, TokenStore
 from app.config import get_settings
 
 A2A_RPC_PATH = "/a2a"
 
 
-def create_app(graph=None) -> FastAPI:
+def create_app(graph=None, auth_store: TokenStore | None = None) -> FastAPI:
     if graph is None:
         from app.graph.builder import default_graph
 
         graph = default_graph()
+
+    if auth_store is None:
+        auth_store = TokenStore(get_settings().auth_db_path)
 
     card = build_agent_card(get_settings().public_base_url)
     handler = DefaultRequestHandler(
@@ -34,6 +38,7 @@ def create_app(graph=None) -> FastAPI:
             handler, rpc_url=A2A_RPC_PATH, enable_v0_3_compat=True
         ),
     )
+    app.add_middleware(BearerAuthMiddleware, store=auth_store)
     return app
 
 
