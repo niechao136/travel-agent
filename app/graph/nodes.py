@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from langgraph.types import interrupt
 
-from app.graph.state import GraphState
+from app.graph.state import GraphState, merge_request
 
 FIELD_LABELS: dict[str, str] = {
     "destination": "目的地",
@@ -37,3 +38,23 @@ def make_ask_missing():
         }
 
     return ask_missing
+
+
+def _last_user_text(messages: list[dict[str, str]]) -> str | None:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return msg.get("content", "")
+    return None
+
+
+def make_extract_and_merge(extractor):
+    """取最后一条用户消息做结构化抽取并增量合并；无用户消息时不动作。"""
+
+    async def extract_and_merge(state: GraphState) -> dict[str, Any]:
+        user_text = _last_user_text(state["messages"])
+        if not user_text:
+            return {}
+        update = await extractor(user_text, date.today().isoformat())
+        return {"request": merge_request(state["request"], update)}
+
+    return extract_and_merge
