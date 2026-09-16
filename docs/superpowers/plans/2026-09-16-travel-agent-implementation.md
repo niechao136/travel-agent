@@ -15,7 +15,7 @@
 ## 全局约束
 
 - Python >= 3.11；包管理用 uv；所有命令在仓库根目录 PowerShell 下执行。
-- 图的每次调用必须带 SQLite `checkpointer`（`AsyncSqliteSaver`，经 `make_async_sqlite_checkpointer()` 创建，`build_graph` 必传该参数，不再提供内存默认），`thread_id` 一律等于 A2A `task_id`（避免同一会话多个 task 串线，对应 PLAN.md 7.2）。**必须用 Async 版**：同步 `SqliteSaver` 不支持 async 图执行（`ainvoke`/`aget_state` 实测 `NotImplementedError`）；工厂在同步上下文即可构造（`aiosqlite.connect(path)` 不 await，连接在首次异步操作时建立），并显式传 `serde=JsonPlusSerializer(allowed_msgpack_modules=[("app.graph.state", "TravelRequest")])` 消除 checkpoint 反序列化警告（该警告未来版本会升级为阻断）。测试统一用 `":memory:"` 保证隔离；未来接入 Hermes 生产环境时可平滑替换为 Postgres saver。
+- 图的每次调用必须带 SQLite `checkpointer`（`AsyncSqliteSaver`，经 `make_async_sqlite_checkpointer()` 创建，`build_graph` 必传该参数，不再提供内存默认），`thread_id` 一律等于 A2A `task_id`（避免同一会话多个 task 串线，对应 PLAN.md 7.2）。**必须用 Async 版**：同步 `SqliteSaver` 不支持 async 图执行（`ainvoke`/`aget_state` 实测 `NotImplementedError`）；工厂在同步上下文即可构造（`aiosqlite.connect(path)` 不 await，连接在首次异步操作时建立），并显式传 `serde=JsonPlusSerializer(allowed_msgpack_modules=ALLOWED_MSGPACK_MODULES)`。`ALLOWED_MSGPACK_MODULES` 是**显式白名单**：每新增一类写入状态的自定义类型都必须登记（未登记会被静默阻断并降级为 dict）——`TravelRequest`（任务 4 起）、`Itinerary`（任务 6 起，嵌套 `ItineraryDay`/`ItineraryItem` 序列化为普通 dict 无需单列）。测试用 `tests/conftest.py` 的 `checkpointer` fixture 提供 `":memory:"` saver 并在用例结束**显式关闭连接**（AsyncSqliteSaver 的 aiosqlite 连接不关闭会挂住进程）；未来接入 Hermes 生产环境时可平滑替换为 Postgres saver。
 - `extract_and_merge` 只合并"新提到的字段"（None 不覆盖），对应 PLAN.md 5。
 - `build_itinerary` 必须调用高德 MCP 工具；MCP 失败时降级生成并加 warnings，**不得裸抛异常**（对应 PLAN.md 10-3）。
 - token 只存 SHA256 哈希；`api_tokens` 表字段与 PLAN.md 8 一致。
@@ -49,6 +49,7 @@ travel-agent/
 │   ├── issue_token.py                  # 发放 token（CLI）
 │   └── a2a_client_demo.py              # A2A 手工测试客户端（验收 4/5 用）
 ├── tests/
+│   ├── conftest.py                     # checkpointer fixture（:memory: SQLite + 显式关闭连接）
 │   ├── fakes.py                        # FakeExtractor/FakeSummarizer/FakeMCP/FakeGraph 等共享假件
 │   ├── test_smoke.py / test_state.py / test_nodes.py / test_interrupt_loop.py
 │   ├── test_mcp_client.py / test_build_itinerary.py / test_full_graph.py
@@ -453,20 +454,27 @@ git commit -m "feat: check_required and ask_missing interrupt node"
 
 - [ ] **步骤 1：编写失败的测试**
 
+`tests/conftest.py`（新建；checkpointer fixture——每个测试独立 `:memory:` SQLite 且**显式关闭连接**：AsyncSqliteSaver 的底层 aiosqlite 连接若不关闭，其工作线程会挂住测试进程/子代理的命令捕获）：
+
+```python
+import pytest_asyncio
+
+from app.graph.builder import make_async_sqlite_checkpointer
+
+
+@pytest_asyncio.fixture
+async def checkpointer():
+    saver = make_async_sqlite_checkpointer(":memory:")
+    yield saver
+    await saver.conn.close()
+```
+
 `tests/fakes.py`（共享假件，后续任务持续追加）：
 
 ```python
 from __future__ import annotations
 
-from typing import Any
-
-from app.graph.builder import make_async_sqlite_checkpointer
-from app.graph.state import TravelRequest, TravelRequestUpdate
-
-
-def sqlite_checkpointer():
-    """每个测试用独立 :memory: SQLite（AsyncSqliteSaver），保证隔离且不写 data/ 目录。"""
-    return make_async_sqlite_checkpointer(":memory:")
+from app.graph.state import TravelRequestUpdate
 
 
 class FakeExtractor:
@@ -490,10 +498,10 @@ from langgraph.types import Command
 
 from app.graph.builder import build_graph
 from app.graph.state import TravelRequest, TravelRequestUpdate
-from tests.fakes import FakeExtractor, sqlite_checkpointer
+from tests.fakes import FakeExtractor
 
 
-async def test_multi_round_interrupt_merges_incrementally():
+async def test_multi_round_interrupt_merges_incrementally(checkpointer):
     ex = FakeExtractor(
         [
             TravelRequestUpdate(destination="杭州"),
@@ -501,7 +509,7 @@ async def test_multi_round_interrupt_merges_incrementally():
             TravelRequestUpdate(budget=3000.0),
         ]
     )
-    graph = build_graph(extractor=ex, checkpointer=sqlite_checkpointer())
+    graph = build_graph(extractor=ex, checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "t-loop"}}
 
     r1 = await graph.ainvoke(
@@ -1078,7 +1086,7 @@ def make_build_itinerary(summarizer, mcp):
     return build_itinerary
 ```
 
-`app/graph/builder.py` 修改：`build_graph` 签名改为 `build_graph(extractor, summarizer, mcp, checkpointer)`（checkpointer 仍为必传的 SQLite saver），新增 `build_itinerary` 节点，并把 `route_after_check` 的 `"done"` 分支改为接 `"build_itinerary"`（任务 4 的 v1 曾直连 END）：
+`app/graph/builder.py` 修改：`build_graph` 签名改为 `build_graph(extractor, summarizer, mcp, checkpointer)`（checkpointer 仍为必传的 SQLite saver），**并把 `ALLOWED_MSGPACK_MODULES` 追加 `("app.graph.state", "Itinerary")` 条目**（显式 allowlist 未注册即阻断：新持久化类型不注册会在 checkpoint 读回时被降级为 dict），新增 `build_itinerary` 节点，并把 `route_after_check` 的 `"done"` 分支改为接 `"build_itinerary"`（任务 4 的 v1 曾直连 END）：
 
 ```python
 from app.graph.nodes import check_required, make_ask_missing, make_build_itinerary, make_extract_and_merge
@@ -1089,7 +1097,7 @@ g.add_node("build_itinerary", make_build_itinerary(summarizer, mcp))
 g.add_edge("build_itinerary", END)
 ```
 
-（测试文件同步更新：`test_interrupt_loop.py` 的 `build_graph(extractor=ex, checkpointer=sqlite_checkpointer())` 改为 `build_graph(extractor=ex, summarizer=FakeSummarizer(make_itinerary()), mcp=FakeMCP(), checkpointer=sqlite_checkpointer())`。）
+（测试文件同步更新：`test_interrupt_loop.py` 的 `build_graph(extractor=ex, checkpointer=checkpointer)` 改为 `build_graph(extractor=ex, summarizer=FakeSummarizer(make_itinerary()), mcp=FakeMCP(), checkpointer=checkpointer)`；另在第三轮断言后追加 checkpoint 往返断言 `snapshot = await graph.aget_state(config)` + `assert isinstance(snapshot.values["itinerary"], Itinerary)`（验证 `Itinerary` 确实命中 serde allowlist）。）
 
 - [ ] **步骤 4：运行验证通过**
 
@@ -1125,14 +1133,13 @@ from tests.fakes import (
     FakeMCP,
     FakeSummarizer,
     make_itinerary,
-    sqlite_checkpointer,
 )
 
 
-def make_graph(summary: FakeSummarizer):
+def make_graph(summary: FakeSummarizer, checkpointer):
     ex = FakeExtractor([TravelRequestUpdate(destination="杭州")])
     return build_graph(
-        extractor=ex, summarizer=summary, mcp=FakeMCP(), checkpointer=sqlite_checkpointer()
+        extractor=ex, summarizer=summary, mcp=FakeMCP(), checkpointer=checkpointer
     )
 
 
@@ -1145,16 +1152,16 @@ FULL_INPUT = {
 CONFIG = {"configurable": {"thread_id": "t-full"}}
 
 
-async def test_complete_flow_presents_draft():
-    graph = make_graph(FakeSummarizer(make_itinerary(total=2500.0)))
+async def test_complete_flow_presents_draft(checkpointer):
+    graph = make_graph(FakeSummarizer(make_itinerary(total=2500.0)), checkpointer)
     result = await graph.ainvoke(FULL_INPUT, CONFIG)
     assert result["response_text"].startswith("# 杭州")
     assert "西湖" in result["response_text"]
     assert result["itinerary"].total_est_cost_cny == 2500.0
 
 
-async def test_budget_overrun_interrupts_and_resume_budget():
-    graph = make_graph(FakeSummarizer(make_itinerary(total=4000.0)))  # 4000 > 3000*1.2
+async def test_budget_overrun_interrupts_and_resume_budget(checkpointer):
+    graph = make_graph(FakeSummarizer(make_itinerary(total=4000.0)), checkpointer)  # 4000 > 3000*1.2
     r1 = await graph.ainvoke(FULL_INPUT, CONFIG)
     payload = r1["__interrupt__"][0].value
     assert payload["type"] == "budget_overrun"
@@ -1166,8 +1173,8 @@ async def test_budget_overrun_interrupts_and_resume_budget():
     assert r2["response_text"].startswith("# 杭州")
 
 
-async def test_budget_overrun_gives_up_after_two_adjusts():
-    graph = make_graph(FakeSummarizer(make_itinerary(total=4000.0)))
+async def test_budget_overrun_gives_up_after_two_adjusts(checkpointer):
+    graph = make_graph(FakeSummarizer(make_itinerary(total=4000.0)), checkpointer)
     await graph.ainvoke(FULL_INPUT, CONFIG)
     r2 = await graph.ainvoke(Command(resume="days=+1"), CONFIG)  # 第一次调整，仍超支 → 再中断
     assert r2["__interrupt__"][0].value["type"] == "budget_overrun"
@@ -2252,7 +2259,7 @@ git commit -m "docs: add a2a demo client and readme with acceptance mapping"
 ## 执行注意
 
 1. **执行顺序即任务编号**；任务 3-7 是图逻辑演进（builder.py 分三次扩展到最终形态），不要跳步合并。
-2. **每个 fake 只进不改语义**：`tests/fakes.py` 是共享假件库，追加时保持既有类签名不变。
+2. **每个 fake 只进不改语义**：`tests/fakes.py` 是共享假件库，追加时保持既有类签名不变。checkpointer 一律用 `tests/conftest.py` 的 `checkpointer` fixture（把测试签名加一个 `checkpointer` 参数），不要自建 `:memory:` saver——fixture 负责在用例结束关闭 aiosqlite 连接，否则连接泄漏会挂住进程。
 3. **a2a-sdk / mcp 版本差异**：任务 5/8/9/10/11 的代码已按实测 API 写好（见全局约束的版本兼容注意）；若仍遇报错，以安装版本源码为准做等价调整，并在 commit message 中注明适配点。
 4. **真实 Key 冒烟**：任务 5 步骤 4 与任务 11 步骤 3 需要有效的高德 Key 与 LLM Key；其余任务全部离线可跑。
-5. **同步 checkpointer 陷阱（任务 3 实测）**：图用 `ainvoke`/`aget_state` 时，同步 `SqliteSaver` 会报 `NotImplementedError: The SqliteSaver does not support async methods`——必须用 `AsyncSqliteSaver`（工厂 `make_async_sqlite_checkpointer`）；且 checkpointer 要显式传 serde 注册 `TravelRequest`，否则反序列化时报 unregistered type 警告（未来版本会阻断）。
+5. **checkpointer 三件套（任务 3/6 实测）**：① 图用 `ainvoke`/`aget_state` 时同步 `SqliteSaver` 会报 `NotImplementedError`——必须用 `AsyncSqliteSaver`（工厂 `make_async_sqlite_checkpointer`）；② 显式 serde 白名单必须登记每一个写入状态的自定义类型（`TravelRequest`、`Itinerary`），漏登记会被静默阻断并降级为 dict（`Blocked deserialization` 只在 log 里，pytest 不报 warning）；③ 测试必须经 conftest 的 `checkpointer` fixture 关闭连接，否则 aiosqlite 工作线程会挂住测试进程（表现为命令不返回）。
