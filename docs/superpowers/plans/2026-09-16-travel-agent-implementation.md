@@ -1044,7 +1044,7 @@ def llm_summarizer(llm):
 `app/graph/nodes.py` 追加：
 
 ```python
-MCP_TOOL_FAILURE = "部分地图数据获取失败，行程基于通用知识生成，请人工核实：{errors}"
+MCP_TOOL_FAILURE = "部分地图数据获取失败，行程未经核实，基于通用知识生成，请人工核实：{errors}"
 
 
 def make_build_itinerary(summarizer, mcp):
@@ -1078,7 +1078,7 @@ def make_build_itinerary(summarizer, mcp):
     return build_itinerary
 ```
 
-`app/graph/builder.py` 修改：`build_graph` 签名改为 `build_graph(extractor, summarizer, mcp, checkpointer)`（checkpointer 仍为必传的 SQLite saver），新增节点与边（`route_after_check` 的 `"done"` 分支暂仍接 END，任务 7 改）：
+`app/graph/builder.py` 修改：`build_graph` 签名改为 `build_graph(extractor, summarizer, mcp, checkpointer)`（checkpointer 仍为必传的 SQLite saver），新增 `build_itinerary` 节点，并把 `route_after_check` 的 `"done"` 分支改为接 `"build_itinerary"`（任务 4 的 v1 曾直连 END）：
 
 ```python
 from app.graph.nodes import check_required, make_ask_missing, make_build_itinerary, make_extract_and_merge
