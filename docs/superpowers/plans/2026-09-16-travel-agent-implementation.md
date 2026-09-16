@@ -6,7 +6,7 @@
 
 **架构：** LangGraph 图（extract_and_merge → check_required → ask_missing/build_itinerary → present_draft）承载业务逻辑，`interrupt()` 暂停等待用户输入；A2A `AgentExecutor` 把 `__interrupt__` 映射为 `input-required` 状态，用 `thread_id = A2A task_id` + `Command(resume=...)` 恢复；FastAPI 挂载 A2A Starlette 应用，外层 ASGI 中间件做 Bearer Token 校验。
 
-**技术栈：** Python >= 3.11（uv 管理）、langgraph + langgraph-checkpoint-sqlite（SQLite 持久化）、langchain-openai（OpenAI 兼容接口）、mcp（官方 SDK，Streamable HTTP 连高德）、a2a-sdk（>=0.3）、FastAPI + uvicorn、pytest + pytest-asyncio、httpx。
+**技术栈：** Python >= 3.11（uv 管理）、langgraph + langgraph-checkpoint-sqlite（AsyncSqliteSaver 持久化）、langchain-openai（OpenAI 兼容接口）、mcp（官方 SDK，Streamable HTTP 连高德）、a2a-sdk（>=0.3）、FastAPI + uvicorn、pytest + pytest-asyncio、httpx。
 
 **规格：** `PLAN.md`（本计划的论证依据，执行者两份都要读）。
 
@@ -15,7 +15,7 @@
 ## 全局约束
 
 - Python >= 3.11；包管理用 uv；所有命令在仓库根目录 PowerShell 下执行。
-- 图的每次调用必须带 SQLite `checkpointer`（`SqliteSaver`，经 `make_sqlite_checkpointer()` 创建，`build_graph` 必传该参数，不再提供内存默认），`thread_id` 一律等于 A2A `task_id`（避免同一会话多个 task 串线，对应 PLAN.md 7.2）。同步 saver 在 async 图执行中由 langgraph 自动线程化调用；测试统一用 `sqlite3.connect(":memory:")` 保证隔离；未来接入 Hermes 生产环境时可平滑替换为 Postgres saver。
+- 图的每次调用必须带 SQLite `checkpointer`（`AsyncSqliteSaver`，经 `make_async_sqlite_checkpointer()` 创建，`build_graph` 必传该参数，不再提供内存默认），`thread_id` 一律等于 A2A `task_id`（避免同一会话多个 task 串线，对应 PLAN.md 7.2）。**必须用 Async 版**：同步 `SqliteSaver` 不支持 async 图执行（`ainvoke`/`aget_state` 实测 `NotImplementedError`）；工厂在同步上下文即可构造（`aiosqlite.connect(path)` 不 await，连接在首次异步操作时建立），并显式传 `serde=JsonPlusSerializer(allowed_msgpack_modules=[("app.graph.state", "TravelRequest")])` 消除 checkpoint 反序列化警告（该警告未来版本会升级为阻断）。测试统一用 `":memory:"` 保证隔离；未来接入 Hermes 生产环境时可平滑替换为 Postgres saver。
 - `extract_and_merge` 只合并"新提到的字段"（None 不覆盖），对应 PLAN.md 5。
 - `build_itinerary` 必须调用高德 MCP 工具；MCP 失败时降级生成并加 warnings，**不得裸抛异常**（对应 PLAN.md 10-3）。
 - token 只存 SHA256 哈希；`api_tokens` 表字段与 PLAN.md 8 一致。
@@ -333,14 +333,12 @@ git commit -m "feat: travel request state model with incremental merge"
 
 **文件：**
 - 创建：`app/graph/nodes.py`、`tests/test_nodes.py`
-- 依赖：langgraph 的 `interrupt`/`Command`/`SqliteSaver`
+- 依赖：langgraph 的 `interrupt`/`Command`/`AsyncSqliteSaver`
 
 - [ ] **步骤 1：编写失败的测试 tests/test_nodes.py**
 
 ```python
-import sqlite3
-
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
@@ -369,18 +367,19 @@ async def test_ask_missing_interrupts_then_resumes():
         {"ask": "ask_missing", END: END},
     )
     g.add_edge("ask_missing", END)
-    graph = g.compile(checkpointer=SqliteSaver(sqlite3.connect(":memory:")))
-    config = {"configurable": {"thread_id": "t1"}}
+    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
+        graph = g.compile(checkpointer=saver)
+        config = {"configurable": {"thread_id": "t1"}}
 
-    r1 = await graph.ainvoke(
-        {"request": TravelRequest(), "messages": [], "missing_fields": []}, config
-    )
-    payload = r1["__interrupt__"][0].value
-    assert payload["type"] == "missing_info"
-    assert "目的地" in payload["question"]
+        r1 = await graph.ainvoke(
+            {"request": TravelRequest(), "messages": [], "missing_fields": []}, config
+        )
+        payload = r1["__interrupt__"][0].value
+        assert payload["type"] == "missing_info"
+        assert "目的地" in payload["question"]
 
-    r2 = await graph.ainvoke(Command(resume="回复文本"), config)
-    assert r2["messages"][-1] == {"role": "user", "content": "回复文本"}
+        r2 = await graph.ainvoke(Command(resume="回复文本"), config)
+        assert r2["messages"][-1] == {"role": "user", "content": "回复文本"}
 ```
 
 - [ ] **步骤 2：运行验证失败**
@@ -459,17 +458,15 @@ git commit -m "feat: check_required and ask_missing interrupt node"
 ```python
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
-
+from app.graph.builder import make_async_sqlite_checkpointer
 from app.graph.state import TravelRequest, TravelRequestUpdate
 
 
-def sqlite_checkpointer() -> SqliteSaver:
-    """每个测试用独立 :memory: SQLite，保证隔离且不写 data/ 目录。"""
-    return SqliteSaver(sqlite3.connect(":memory:"))
+def sqlite_checkpointer():
+    """每个测试用独立 :memory: SQLite（AsyncSqliteSaver），保证隔离且不写 data/ 目录。"""
+    return make_async_sqlite_checkpointer(":memory:")
 
 
 class FakeExtractor:
@@ -631,21 +628,29 @@ def make_extract_and_merge(extractor):
 ```python
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
+import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import check_required, make_ask_missing, make_extract_and_merge
 from app.graph.state import GraphState
 
+ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [("app.graph.state", "TravelRequest")]
 
-def make_sqlite_checkpointer(db_path: str) -> SqliteSaver:
-    """SQLite checkpointer 工厂；check_same_thread=False 允许 langgraph 在线程池中调用。"""
+
+def make_async_sqlite_checkpointer(db_path: str) -> AsyncSqliteSaver:
+    """AsyncSqliteSaver 工厂：同步上下文即可调用（连接在首次异步操作时建立）。
+
+    - 同步 SqliteSaver 不支持 async 图执行（实测 NotImplementedError），必须用 Async 版；
+    - 显式 serde 注册 TravelRequest，消除 checkpoint 反序列化警告（未来版本会阻断）。
+    """
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    return SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))
+    serde = JsonPlusSerializer(allowed_msgpack_modules=ALLOWED_MSGPACK_MODULES)
+    return AsyncSqliteSaver(aiosqlite.connect(db_path), serde=serde)
 
 
 def route_after_check(state: GraphState) -> str:
@@ -1232,11 +1237,12 @@ def route_after_build(state: GraphState) -> str:
 ```python
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
+import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
@@ -1250,11 +1256,18 @@ from app.graph.nodes import (
 )
 from app.graph.state import GraphState
 
+ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [("app.graph.state", "TravelRequest")]
 
-def make_sqlite_checkpointer(db_path: str) -> SqliteSaver:
-    """SQLite checkpointer 工厂；check_same_thread=False 允许 langgraph 在线程池中调用。"""
+
+def make_async_sqlite_checkpointer(db_path: str) -> AsyncSqliteSaver:
+    """AsyncSqliteSaver 工厂：同步上下文即可调用（连接在首次异步操作时建立）。
+
+    - 同步 SqliteSaver 不支持 async 图执行（实测 NotImplementedError），必须用 Async 版；
+    - 显式 serde 注册 TravelRequest，消除 checkpoint 反序列化警告（未来版本会阻断）。
+    """
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    return SqliteSaver(sqlite3.connect(db_path, check_same_thread=False))
+    serde = JsonPlusSerializer(allowed_msgpack_modules=ALLOWED_MSGPACK_MODULES)
+    return AsyncSqliteSaver(aiosqlite.connect(db_path), serde=serde)
 
 
 def route_after_check(state: GraphState) -> str:
@@ -1705,7 +1718,7 @@ def default_graph():
         extractor=llm_extractor(llm),
         summarizer=llm_summarizer(llm),
         mcp=mcp,
-        checkpointer=make_sqlite_checkpointer(get_settings().checkpoint_db_path),
+        checkpointer=make_async_sqlite_checkpointer(get_settings().checkpoint_db_path),
     )
 ```
 
@@ -2212,5 +2225,6 @@ git commit -m "docs: add a2a demo client and readme with acceptance mapping"
 
 1. **执行顺序即任务编号**；任务 3-7 是图逻辑演进（builder.py 分三次扩展到最终形态），不要跳步合并。
 2. **每个 fake 只进不改语义**：`tests/fakes.py` 是共享假件库，追加时保持既有类签名不变。
-3. **a2a-sdk / mcp 版本差异**：遇到 import 或字段报错时，以安装版本源码为准做等价调整（如 `a2a.utils.message.get_message_text` 在部分版本位于 `a2a.utils`），并在 commit message 中注明适配点。
+3. **a2a-sdk / mcp 版本差异**：任务 5/8/9/10/11 的代码已按实测 API 写好（见全局约束的版本兼容注意）；若仍遇报错，以安装版本源码为准做等价调整，并在 commit message 中注明适配点。
 4. **真实 Key 冒烟**：任务 5 步骤 4 与任务 11 步骤 3 需要有效的高德 Key 与 LLM Key；其余任务全部离线可跑。
+5. **同步 checkpointer 陷阱（任务 3 实测）**：图用 `ainvoke`/`aget_state` 时，同步 `SqliteSaver` 会报 `NotImplementedError: The SqliteSaver does not support async methods`——必须用 `AsyncSqliteSaver`（工厂 `make_async_sqlite_checkpointer`）；且 checkpointer 要显式传 serde 注册 `TravelRequest`，否则反序列化时报 unregistered type 警告（未来版本会阻断）。
