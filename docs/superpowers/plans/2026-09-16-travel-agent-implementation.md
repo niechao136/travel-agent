@@ -1873,6 +1873,8 @@ git commit -m "feat: fastapi app exposing a2a jsonrpc endpoint with agent card"
 - [ ] **步骤 1：编写失败的测试 tests/test_auth.py**
 
 ```python
+from datetime import UTC, datetime, timedelta, timezone
+
 import httpx
 
 from app.auth import TokenStore
@@ -1905,6 +1907,22 @@ def test_revoke_rejects_token(tmp_path):
 def test_expired_token_rejected(tmp_path):
     store = make_store(tmp_path)
     token = store.issue("test-caller", expires_at="2000-01-01T00:00:00+00:00")
+    assert store.verify(token) is None
+
+
+def test_offset_expired_token_rejected(tmp_path):
+    """非 UTC 偏移的过期时刻也要按真实时刻判断（字符串字典序比较会误判）。"""
+    store = make_store(tmp_path)
+    past = datetime.now(UTC) - timedelta(days=1)
+    offset = timezone(timedelta(hours=13))
+    token = store.issue("test-caller", expires_at=past.astimezone(offset).isoformat())
+    assert store.verify(token) is None
+
+
+def test_unparsable_expiry_rejected(tmp_path):
+    """无法解析的过期时间按已过期处理（安全默认，不放行）。"""
+    store = make_store(tmp_path)
+    token = store.issue("test-caller", expires_at="not-a-date")
     assert store.verify(token) is None
 
 
@@ -1961,6 +1979,22 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _is_expired(expires_at: str | None) -> bool:
+    """按真实时刻判断过期：解析为 datetime 比较（字符串字典序在非 UTC 偏移下会误判）。
+
+    缺失时区的时间按 UTC 解释；解析失败视为已过期（安全默认，拒绝放行）。
+    """
+    if not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    return expires <= datetime.now(UTC)
+
+
 @dataclass
 class TokenInfo:
     caller_name: str
@@ -2009,7 +2043,7 @@ class TokenStore:
         if row is None:
             return None
         caller, scopes, expires_at = row
-        if expires_at and expires_at <= _now_iso():
+        if _is_expired(expires_at):
             return None
         self.conn.execute(
             "UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?",
