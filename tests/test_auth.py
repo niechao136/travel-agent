@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta, timezone
+
 import httpx
 
 from app.auth import TokenStore
@@ -30,6 +32,22 @@ def test_revoke_rejects_token(tmp_path):
 def test_expired_token_rejected(tmp_path):
     store = make_store(tmp_path)
     token = store.issue("test-caller", expires_at="2000-01-01T00:00:00+00:00")
+    assert store.verify(token) is None
+
+
+def test_offset_expired_token_rejected(tmp_path):
+    """非 UTC 偏移的过期时刻也要按真实时刻判断（字符串字典序比较会误判）。"""
+    store = make_store(tmp_path)
+    past = datetime.now(UTC) - timedelta(days=1)
+    offset = timezone(timedelta(hours=13))
+    token = store.issue("test-caller", expires_at=past.astimezone(offset).isoformat())
+    assert store.verify(token) is None
+
+
+def test_unparsable_expiry_rejected(tmp_path):
+    """无法解析的过期时间按已过期处理（安全默认，不放行）。"""
+    store = make_store(tmp_path)
+    token = store.issue("test-caller", expires_at="not-a-date")
     assert store.verify(token) is None
 
 

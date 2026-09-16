@@ -16,6 +16,22 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _is_expired(expires_at: str | None) -> bool:
+    """按真实时刻判断过期：解析为 datetime 比较（字符串字典序在非 UTC 偏移下会误判）。
+
+    缺失时区的时间按 UTC 解释；解析失败视为已过期（安全默认，拒绝放行）。
+    """
+    if not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    return expires <= datetime.now(UTC)
+
+
 @dataclass
 class TokenInfo:
     caller_name: str
@@ -64,7 +80,7 @@ class TokenStore:
         if row is None:
             return None
         caller, scopes, expires_at = row
-        if expires_at and expires_at <= _now_iso():
+        if _is_expired(expires_at):
             return None
         self.conn.execute(
             "UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?",
