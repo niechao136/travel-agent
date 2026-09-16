@@ -73,3 +73,61 @@ def make_itinerary(total: float = 4000.0) -> Itinerary:
         total_est_cost_cny=total,
         data_verified=False,
     )
+
+
+from types import SimpleNamespace
+
+from a2a.types import Message, Part, Role
+
+
+class FakeGraph:
+    """按顺序吐出 ainvoke 结果；paused 决定 aget_state().next 是否非空（模拟停在 interrupt 上）。"""
+
+    def __init__(self, results: list[dict], paused: set[str] | None = None):
+        self.results = list(results)
+        self.paused = paused or set()
+        self.invocations: list[tuple] = []
+
+    async def aget_state(self, config):
+        tid = config["configurable"]["thread_id"]
+        return SimpleNamespace(next=("pending",) if tid in self.paused else ())
+
+    async def ainvoke(self, graph_input, config):
+        self.invocations.append((graph_input, config))
+        return self.results.pop(0)
+
+
+class FakeEventQueue:
+    """只实现 executor 用到的 enqueue_event 接口。"""
+
+    def __init__(self):
+        self.events: list = []
+
+    async def enqueue_event(self, event) -> None:
+        self.events.append(event)
+
+
+def make_context(text: str, task_id: str = "task-1", current_task=None):
+    msg = Message(
+        role=Role.ROLE_USER,
+        parts=[Part(text=text)],
+        message_id=f"m-{task_id}",
+        context_id=task_id,
+        task_id=task_id,
+    )
+    return SimpleNamespace(
+        task_id=task_id, context_id=task_id, current_task=current_task, message=msg
+    )
+
+
+def part_text(part) -> str:
+    return part.text
+
+
+def interrupt_result(question: str) -> dict:
+    """构造含 __interrupt__ 的 ainvoke 返回值（任务 9 的 API 测试复用）。"""
+    return {
+        "__interrupt__": [
+            type("I", (), {"value": {"type": "missing_info", "question": question}})()
+        ]
+    }
