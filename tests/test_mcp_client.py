@@ -1,8 +1,10 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from mcp.types import CallToolResult, TextContent
 
-from app.mcp_client import AmapMCPClient, extract_text
+from app.mcp_client import AmapMCPClient, MCPSession, extract_text
 
 
 def test_extract_text_joins_text_blocks():
@@ -19,19 +21,19 @@ def test_extract_text_empty():
 class FakeSession:
     def __init__(self, responses: dict[str, str]):
         self.responses = responses
-        self.calls: list[tuple[str, dict]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         pass
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         self.calls.append((name, arguments))
         return CallToolResult(content=[TextContent(type="text", text=self.responses[name])])
 
 
 def make_client_with(session: FakeSession) -> AmapMCPClient:
     @asynccontextmanager
-    async def fake_session():
+    async def fake_session() -> AsyncIterator[MCPSession]:
         yield session
 
     client = AmapMCPClient(url="http://fake")
@@ -53,7 +55,7 @@ async def test_error_result_raises_runtime_error():
     from mcp.types import CallToolResult, TextContent
 
     class ErrorSession(FakeSession):
-        async def call_tool(self, name, arguments):
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
             return CallToolResult(content=[TextContent(type="text", text="invalid key")], is_error=True)
 
     client = make_client_with(ErrorSession({}))

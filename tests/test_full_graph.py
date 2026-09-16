@@ -1,5 +1,6 @@
 from datetime import date
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from app.graph.builder import build_graph
@@ -9,23 +10,25 @@ from tests.fakes import (
     FakeMCP,
     FakeSummarizer,
     make_itinerary,
+    partial_state,
+    thread_config,
 )
 
 
-def make_graph(summary: FakeSummarizer, checkpointer):
+def make_graph(summary: FakeSummarizer, checkpointer: AsyncSqliteSaver):
     ex = FakeExtractor([TravelRequestUpdate(destination="杭州")])
     return build_graph(
         extractor=ex, summarizer=summary, mcp=FakeMCP(), checkpointer=checkpointer
     )
 
 
-FULL_INPUT = {
-    "request": TravelRequest(
+FULL_INPUT = partial_state(
+    request=TravelRequest(
         destination="杭州", start_date=date(2026, 10, 1), end_date=date(2026, 10, 3), budget=3000.0
     ),
-    "messages": [{"role": "user", "content": "杭州三日游"}],
-}
-CONFIG = {"configurable": {"thread_id": "t-full"}}
+    messages=[{"role": "user", "content": "杭州三日游"}],
+)
+CONFIG = thread_config("t-full")
 
 
 async def test_complete_flow_presents_draft(checkpointer):

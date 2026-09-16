@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from datetime import datetime, timedelta
 from typing import Any
 
 from langgraph.types import interrupt
 
-from app.graph.state import GraphState, merge_request
+from app.graph.state import GraphState, Itinerary, TravelRequest, merge_request
+from app.protocols import AmapTools, Extractor, Summarizer
 
 FIELD_LABELS: dict[str, str] = {
     "destination": "目的地",
@@ -47,7 +49,7 @@ def _last_user_text(messages: list[dict[str, str]]) -> str | None:
     return None
 
 
-def make_extract_and_merge(extractor):
+def make_extract_and_merge(extractor: Extractor):
     """取最后一条用户消息做结构化抽取并增量合并；无用户消息时不动作。"""
 
     async def extract_and_merge(state: GraphState) -> dict[str, Any]:
@@ -63,7 +65,7 @@ def make_extract_and_merge(extractor):
 MCP_TOOL_FAILURE = "部分地图数据获取失败，行程未经核实，基于通用知识生成，请人工核实：{errors}"
 
 
-def make_build_itinerary(summarizer, mcp):
+def make_build_itinerary(summarizer: Summarizer, mcp: AmapTools):
     """调高德 MCP 取真实数据 → 交给 summarizer 生成结构化行程。
 
     任一 MCP 调用失败都不抛异常：记录 mcp_errors、data_verified=False 并附 warnings。
@@ -71,20 +73,23 @@ def make_build_itinerary(summarizer, mcp):
 
     async def build_itinerary(state: GraphState) -> dict[str, Any]:
         request = state["request"]
+        destination = request.destination
+        if destination is None:
+            raise RuntimeError("build_itinerary 需要明确的目的地")
         errors: list[str] = []
 
-        async def safe(name: str, coro) -> str:
+        async def safe(name: str, coro: Awaitable[str]) -> str:
             try:
                 return await coro
             except Exception as exc:  # noqa: BLE001 —— 兜底要求：任何工具失败不中断流程
                 errors.append(f"{name} failed: {exc}")
                 return ""
 
-        weather = await safe("weather", mcp.get_weather(request.destination))
-        geo = await safe("geo", mcp.geocode(request.destination))
-        pois = await safe("poi", mcp.search_pois("景点", request.destination))
-        restaurants = await safe("poi_restaurant", mcp.search_pois("餐厅", request.destination))
-        hotels = await safe("poi_hotel", mcp.search_pois("酒店", request.destination))
+        weather = await safe("weather", mcp.get_weather(destination))
+        geo = await safe("geo", mcp.geocode(destination))
+        pois = await safe("poi", mcp.search_pois("景点", destination))
+        restaurants = await safe("poi_restaurant", mcp.search_pois("餐厅", destination))
+        hotels = await safe("poi_hotel", mcp.search_pois("酒店", destination))
 
         context_text = (
             f"【地理编码】\n{geo}\n\n【天气】\n{weather}\n\n【景点 POI】\n{pois}"
@@ -111,7 +116,7 @@ TYPE_LABELS: dict[str, str] = {
 }
 
 
-def _apply_budget_adjust(updated, req, text: str) -> None:
+def _apply_budget_adjust(updated: TravelRequest, req: TravelRequest, text: str) -> None:
     """解析 resume 文本并就地更新 request（budget=/days=+N）；无法解析时按 keep 语义处理。
 
     容错要点：用户可能回复 `budget=五千` 之类非法值，直接 float()/int() 会抛 ValueError，
@@ -124,9 +129,11 @@ def _apply_budget_adjust(updated, req, text: str) -> None:
             pass
     elif text.startswith("days="):
         try:
-            updated.end_date = req.end_date + timedelta(days=int(text.split("=", 1)[1].lstrip("+")))
+            extra_days = int(text.split("=", 1)[1].lstrip("+"))
         except ValueError:
-            pass
+            return
+        if req.end_date is not None:
+            updated.end_date = req.end_date + timedelta(days=extra_days)
 
 
 def make_ask_budget_adjust():
@@ -137,9 +144,13 @@ def make_ask_budget_adjust():
 
     async def ask_budget_adjust(state: GraphState) -> dict[str, Any]:
         it, req = state["itinerary"], state["request"]
+        budget = req.budget
+        if it is None or budget is None:
+            # 只有 route_after_build 判定超支时才会进入本节点，二者届时必然已就绪
+            raise RuntimeError("ask_budget_adjust 需要已生成的行程与预算")
         question = (
             f"预估总花费 {it.total_est_cost_cny:.0f} 元，"
-            f"超出预算 {it.total_est_cost_cny - req.budget:.0f} 元（预算 {req.budget:.0f} 元）。"
+            f"超出预算 {it.total_est_cost_cny - budget:.0f} 元（预算 {budget:.0f} 元）。"
             "回复 keep 维持本方案；budget=新预算（如 budget=5000）；days=+1 延长行程。"
         )
         reply = interrupt(
@@ -147,7 +158,7 @@ def make_ask_budget_adjust():
                 "type": "budget_overrun",
                 "question": question,
                 "estimated_total": it.total_est_cost_cny,
-                "budget": req.budget,
+                "budget": budget,
             }
         )
         updated = req.model_copy()
@@ -158,7 +169,7 @@ def make_ask_budget_adjust():
     return ask_budget_adjust
 
 
-def format_itinerary(it) -> str:
+def format_itinerary(it: Itinerary) -> str:
     lines = [f"# {it.destination} 逐日行程", f"预估总花费：{it.total_est_cost_cny:.0f} 元"]
     lines += [f"> ⚠ {w}" for w in it.warnings]
     for d in it.days:
@@ -172,7 +183,10 @@ def format_itinerary(it) -> str:
 
 
 def present_draft(state: GraphState) -> dict[str, Any]:
-    text = format_itinerary(state["itinerary"])
+    it = state["itinerary"]
+    if it is None:
+        raise RuntimeError("present_draft 需要已生成的行程")
+    text = format_itinerary(it)
     return {
         "response_text": text,
         "messages": state["messages"] + [{"role": "assistant", "content": text}],

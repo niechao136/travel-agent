@@ -6,9 +6,9 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from langgraph.types import Command
 
-from app.graph.state import TravelRequest
+from app.graph.state import GraphState, TravelRequest
 
-INITIAL_STATE: dict = {
+INITIAL_STATE: GraphState = {
     "request": TravelRequest(),
     "missing_fields": [],
     "messages": [],
@@ -36,12 +36,15 @@ class TravelAgentExecutor(AgentExecutor):
         self.graph = graph
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
+        task_id, context_id = context.task_id, context.context_id
+        if task_id is None or context_id is None:
+            raise ValueError("RequestContext 缺少 task_id/context_id，无法映射 LangGraph 线程")
+        updater = TaskUpdater(event_queue, task_id, context_id)
         if context.current_task is None:
             await event_queue.enqueue_event(
                 Task(
-                    id=context.task_id,
-                    context_id=context.context_id,
+                    id=task_id,
+                    context_id=context_id,
                     status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED),
                 )
             )
@@ -50,7 +53,7 @@ class TravelAgentExecutor(AgentExecutor):
         user_text = ""
         if context.message is not None and len(context.message.parts) > 0:
             user_text = context.message.parts[0].text
-        config = {"configurable": {"thread_id": context.task_id}}
+        config = {"configurable": {"thread_id": task_id}}
         try:
             snapshot = await self.graph.aget_state(config)
             if snapshot.next:

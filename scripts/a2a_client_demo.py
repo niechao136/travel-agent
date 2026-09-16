@@ -8,6 +8,7 @@
 
 import argparse
 import uuid
+from typing import Any
 
 import httpx
 
@@ -15,7 +16,7 @@ TIMEOUT = 300.0
 
 
 def send(base: str, token: str, text: str, task_id: str | None = None,
-         context_id: str | None = None, protocol: str = "v1") -> dict:
+         context_id: str | None = None, protocol: str = "v1") -> dict[str, Any]:
     if protocol == "v1":
         msg = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER", "parts": [{"text": text}]}
         method = "SendMessage"

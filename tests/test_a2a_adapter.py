@@ -1,3 +1,5 @@
+from typing import Any
+
 from a2a.types import Task, TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent
 from langgraph.types import Command
 
@@ -45,7 +47,7 @@ async def test_resume_uses_command_with_thread_id_task_id():
 
 async def test_graph_exception_emits_failed():
     class BoomGraph(FakeGraph):
-        async def ainvoke(self, graph_input, config):
+        async def ainvoke(self, graph_input: Any, config: Any = None) -> dict[str, Any]:
             raise RuntimeError("boom")
 
     executor = TravelAgentExecutor(BoomGraph([]))

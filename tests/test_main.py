@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from typing import Any
 
 import httpx
 import pytest
@@ -72,7 +73,9 @@ async def test_v0_3_compat_message_send_and_resume(auth):
     store, token = auth
     graph = FakeGraph([interrupt_result("请补充预算。"), {"response_text": "# OK", "itinerary": {}}])
 
-    def body(text: str, task_id: str | None = None, context_id: str | None = None) -> dict:
+    def body(
+        text: str, task_id: str | None = None, context_id: str | None = None
+    ) -> dict[str, Any]:
         m = {
             "messageId": uuid.uuid4().hex,
             "role": "user",

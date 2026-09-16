@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -18,6 +19,7 @@ from app.graph.nodes import (
     route_after_build,
 )
 from app.graph.state import GraphState
+from app.protocols import AmapTools, Extractor, Summarizer
 
 ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
     ("app.graph.state", "TravelRequest"),
@@ -41,7 +43,10 @@ def route_after_check(state: GraphState) -> str:
 
 
 def build_graph(
-    extractor, summarizer, mcp, checkpointer: BaseCheckpointSaver
+    extractor: Extractor,
+    summarizer: Summarizer,
+    mcp: AmapTools,
+    checkpointer: BaseCheckpointSaver[Any],
 ):
     g = StateGraph(GraphState)
     g.add_node("extract_and_merge", make_extract_and_merge(extractor))

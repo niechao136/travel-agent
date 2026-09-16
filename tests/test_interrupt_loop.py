@@ -1,13 +1,21 @@
 from datetime import date
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from app.graph.builder import build_graph
 from app.graph.state import Itinerary, TravelRequest, TravelRequestUpdate
-from tests.fakes import FakeExtractor, FakeMCP, FakeSummarizer, make_itinerary
+from tests.fakes import (
+    FakeExtractor,
+    FakeMCP,
+    FakeSummarizer,
+    make_itinerary,
+    partial_state,
+    thread_config,
+)
 
 
-async def test_multi_round_interrupt_merges_incrementally(checkpointer):
+async def test_multi_round_interrupt_merges_incrementally(checkpointer: AsyncSqliteSaver):
     ex = FakeExtractor(
         [
             TravelRequestUpdate(destination="杭州"),
@@ -21,10 +29,12 @@ async def test_multi_round_interrupt_merges_incrementally(checkpointer):
         mcp=FakeMCP(),
         checkpointer=checkpointer,
     )
-    config = {"configurable": {"thread_id": "t-loop"}}
+    config = thread_config("t-loop")
 
     r1 = await graph.ainvoke(
-        {"request": TravelRequest(), "messages": [{"role": "user", "content": "我想去杭州玩"}]},
+        partial_state(
+            request=TravelRequest(), messages=[{"role": "user", "content": "我想去杭州玩"}]
+        ),
         config,
     )
     assert r1["__interrupt__"][0].value["missing"] == ["start_date", "end_date", "budget"]

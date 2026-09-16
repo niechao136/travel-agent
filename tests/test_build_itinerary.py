@@ -2,7 +2,7 @@ from datetime import date
 
 from app.graph.nodes import make_build_itinerary
 from app.graph.state import TravelRequest
-from tests.fakes import FakeMCP, FakeSummarizer, make_itinerary
+from tests.fakes import FakeMCP, FakeSummarizer, make_itinerary, partial_state
 
 
 def make_request(budget: float = 3000.0) -> TravelRequest:
@@ -14,7 +14,7 @@ def make_request(budget: float = 3000.0) -> TravelRequest:
 async def test_build_itinerary_calls_mcp_and_marks_verified():
     mcp, summary = FakeMCP(), FakeSummarizer(make_itinerary())
     node = make_build_itinerary(summarizer=summary, mcp=mcp)
-    out = await node({"request": make_request(), "mcp_errors": []})
+    out = await node(partial_state(request=make_request(), mcp_errors=[]))
 
     # 5 次调用：天气 / 地理编码 / 景点 POI / 餐厅 POI / 酒店 POI（餐饮住宿也要真实数据）
     assert mcp.calls == [
@@ -32,7 +32,7 @@ async def test_build_itinerary_calls_mcp_and_marks_verified():
 async def test_build_itinerary_degrades_when_mcp_fails():
     summary = FakeSummarizer(make_itinerary())
     node = make_build_itinerary(summarizer=summary, mcp=FakeMCP(fail=True))
-    out = await node({"request": make_request(), "mcp_errors": []})
+    out = await node(partial_state(request=make_request(), mcp_errors=[]))
 
     assert out["itinerary"].data_verified is False  # 不裸抛异常
     assert len(out["mcp_errors"]) == 5  # 5 次 MCP 调用全部失败

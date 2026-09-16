@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any, Protocol
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextContent
+
+
+class MCPSession(Protocol):
+    """客户端真正用到的会话能力（initialize + call_tool）。"""
+
+    async def initialize(self) -> object: ...
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult: ...
 
 
 def extract_text(result: CallToolResult) -> str:
@@ -14,7 +22,7 @@ def extract_text(result: CallToolResult) -> str:
     if result.is_error:
         detail = extract_text(CallToolResult(content=result.content))
         raise RuntimeError(f"MCP tool error: {detail}")
-    parts = [b.text for b in result.content if hasattr(b, "text")]
+    parts = [b.text for b in result.content if isinstance(b, TextContent)]
     return "\n".join(parts)
 
 
@@ -23,7 +31,10 @@ class AmapMCPClient:
 
     def __init__(self, url: str):
         self.url = url  # 形如 https://mcp.amap.com/mcp?key=xxx
-        self._session_factory = self._default_session_factory
+        # 显式标注为协议类型：生产注入 ClientSession，测试可注入任意实现了这两个方法的替身
+        self._session_factory: Callable[[], AbstractAsyncContextManager[MCPSession]] = (
+            self._default_session_factory
+        )
 
     @asynccontextmanager
     async def _default_session_factory(self) -> AsyncIterator[ClientSession]:
