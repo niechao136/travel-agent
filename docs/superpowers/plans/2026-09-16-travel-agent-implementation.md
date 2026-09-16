@@ -595,13 +595,13 @@ def make_extract_and_merge(extractor):
         user_text = _last_user_text(state["messages"])
         if not user_text:
             return {}
-        update = await extractor(user_text, datetime.now(tz=UTC).date().isoformat())
+        update = await extractor(user_text, datetime.now().astimezone().date().isoformat())
         return {"request": merge_request(state["request"], update)}
 
     return extract_and_merge
 ```
 
-（文件顶部补 `from datetime import UTC, datetime` 与 `from app.graph.state import merge_request`。）
+（文件顶部补 `from datetime import datetime` 与 `from app.graph.state import merge_request`。日期锚点用本地时区 `datetime.now().astimezone().date()`，满足 ruff DTZ 规则且不会在 UTC+8 凌晨偏一天。）
 
 `app/graph/builder.py`（v1：齐全分支暂接 END，任务 6/7 逐步接入 build_itinerary/present_draft）：
 
@@ -827,7 +827,7 @@ async def main() -> None:
         await session.initialize()
         tools = await session.list_tools()
         for t in tools.tools:
-            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
+            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.input_schema}")
 
 
 if __name__ == "__main__":
