@@ -21,7 +21,7 @@
 - token 只存 SHA256 哈希；`api_tokens` 表字段与 PLAN.md 8 一致。
 - commit 用 Conventional Commits（feat/fix/test/chore/docs）。
 - 每个任务结束必须 `uv run pytest -q` 全绿再 commit。
-- **版本兼容注意**：a2a-sdk 0.2→0.3 有字段改名（如 `type`→`kind`、well-known 路径 `agent.json`→`agent-card.json`）；若某行 import 或字段报错，以安装版本源码（`a2a/types.py`、`a2a/server/tasks/task_updater.py`）为准做等价微调，不改变行为语义。mcp SDK 的 `streamablehttp_client` 返回三元组 `(read, write, get_session_id)`。
+- **版本兼容注意（已由控制者探针实测）**：a2a-sdk 1.1.2 为 protobuf 重构版——协议版本经 HTTP header `A2A-Version: 1.0` 协商（缺失默认 0.3 被拒）、方法名 `SendMessage`（gRPC 风格）、executor 首次调用必须先入队 `Task` 再发状态事件、`add_a2a_routes_to_fastapi` 直挂 FastAPI、AgentCard 无 url 字段（用 `supported_interfaces`）；mcp 2.2.0 的入口为 `streamable_http_client(url)`（返回二元组 `(read_stream, write_stream)`），结果字段为 `is_error`。任务 5/8/9/10/11 的计划代码已按上述实测 API 写好；若某行仍报错，以安装版本源码为准做等价微调。
 
 ## 文件结构
 
@@ -745,7 +745,7 @@ async def test_error_result_raises_runtime_error():
 
     class ErrorSession(FakeSession):
         async def call_tool(self, name, arguments):
-            return CallToolResult(content=[TextContent(type="text", text="invalid key")], isError=True)
+            return CallToolResult(content=[TextContent(type="text", text="invalid key")], is_error=True)
 
     client = make_client_with(ErrorSession({}))
     try:
@@ -770,13 +770,13 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult
 
 
 def extract_text(result: CallToolResult) -> str:
-    """把 CallToolResult 的 content 拼成纯文本；isError 时抛 RuntimeError。"""
-    if result.isError:
+    """把 CallToolResult 的 content 拼成纯文本；is_error 时抛 RuntimeError（mcp 2.x 字段名）。"""
+    if result.is_error:
         detail = extract_text(CallToolResult(content=result.content))
         raise RuntimeError(f"MCP tool error: {detail}")
     parts = [b.text for b in result.content if hasattr(b, "text")]
@@ -784,16 +784,16 @@ def extract_text(result: CallToolResult) -> str:
 
 
 class AmapMCPClient:
-    """高德 MCP 客户端。每次调用独立建立连接（简单可靠，规避会话生命周期管理）。"""
+    """高德 MCP 客户端（mcp 2.x）。每次调用独立建立连接（简单可靠，规避会话生命周期管理）。"""
 
     def __init__(self, url: str):
-        self.url = url
+        self.url = url  # 形如 https://mcp.amap.com/mcp?key=xxx
         self._session_factory = self._default_session_factory
 
     @asynccontextmanager
     async def _default_session_factory(self) -> AsyncIterator[ClientSession]:
-        async with streamablehttp_client(self.url) as (read, write, _get_session_id):
-            async with ClientSession(read, write) as session:
+        async with streamable_http_client(self.url) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 yield session
 
@@ -826,14 +826,14 @@ import os
 
 from dotenv import load_dotenv
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 
 async def main() -> None:
     load_dotenv()
     url = os.environ["AMAP_MCP_URL"]
-    async with streamablehttp_client(url) as (read, write, _):
-        async with ClientSession(read, write) as session:
+    async with streamable_http_client(url) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             tools = await session.list_tools()
             for t in tools.tools:
@@ -1311,12 +1311,12 @@ git commit -m "feat: present_draft and budget overrun second interrupt"
 
 - [ ] **步骤 1：编写失败的测试**
 
-`tests/fakes.py` 追加：
+`tests/fakes.py` 追加（a2a-sdk 1.x：protobuf 消息 + FakeEventQueue 收集器，SDK 的 EventQueue 无公开读取 API）：
 
 ```python
 from types import SimpleNamespace
 
-from a2a.types import Message, Part, Role, TextPart
+from a2a.types import Message, Part, Role
 
 
 class FakeGraph:
@@ -1336,10 +1336,20 @@ class FakeGraph:
         return self.results.pop(0)
 
 
+class FakeEventQueue:
+    """只实现 executor 用到的 enqueue_event 接口。"""
+
+    def __init__(self):
+        self.events: list = []
+
+    async def enqueue_event(self, event) -> None:
+        self.events.append(event)
+
+
 def make_context(text: str, task_id: str = "task-1", current_task=None):
     msg = Message(
-        role=Role.user,
-        parts=[Part(root=TextPart(text=text))],
+        role=Role.ROLE_USER,
+        parts=[Part(text=text)],
         message_id=f"m-{task_id}",
         context_id=task_id,
         task_id=task_id,
@@ -1349,8 +1359,8 @@ def make_context(text: str, task_id: str = "task-1", current_task=None):
     )
 
 
-def part_text(part: Part) -> str:
-    return part.root.text
+def part_text(part) -> str:
+    return part.text
 
 
 def interrupt_result(question: str) -> dict:
@@ -1360,38 +1370,30 @@ def interrupt_result(question: str) -> dict:
             type("I", (), {"value": {"type": "missing_info", "question": question}})()
         ]
     }
-
-
-def drain_events(event_queue) -> list:
-    import asyncio
-
-    events = []
-    while True:
-        try:
-            events.append(event_queue.dequeue_event_nowait())
-        except (asyncio.QueueEmpty, AttributeError):
-            break
-    return events
 ```
 
 `tests/test_a2a_adapter.py`：
 
 ```python
+from a2a.types import Task, TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent
+from langgraph.types import Command
+
 from app.a2a_adapter import TravelAgentExecutor
-from a2a.server.events import EventQueue
-from a2a.types import TaskState
-from tests.fakes import FakeGraph, drain_events, interrupt_result, make_context, part_text
+from tests.fakes import FakeEventQueue, FakeGraph, interrupt_result, make_context, part_text
 
 
-async def test_new_task_with_interrupt_emits_input_required():
+async def test_new_task_with_interrupt_emits_task_then_input_required():
     graph = FakeGraph([interrupt_result("请补充目的地、日期与预算。")])
     executor = TravelAgentExecutor(graph)
-    queue = EventQueue()
+    queue = FakeEventQueue()
 
     await executor.execute(make_context("我想出去玩"), queue)
-    events = drain_events(queue)
-    last = events[-1]
-    assert last.status.state == TaskState.input_required
+    # a2a 1.x task mode：首事件必须是 Task，随后才是状态事件
+    assert isinstance(queue.events[0], Task)
+    assert queue.events[0].status.state == TaskState.TASK_STATE_SUBMITTED
+    last = queue.events[-1]
+    assert isinstance(last, TaskStatusUpdateEvent)
+    assert last.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
     assert "请补充" in part_text(last.status.message.parts[0])
     # 初始输入应包含 user 消息与空 TravelRequest
     first_input = graph.invocations[0][0]
@@ -1400,20 +1402,22 @@ async def test_new_task_with_interrupt_emits_input_required():
 
 async def test_resume_uses_command_with_thread_id_task_id():
     graph = FakeGraph(
-        [interrupt_result("问"), {"response_text": "# 行程", "itinerary": {"destination": "杭州"}}],
+        [{"response_text": "# 行程", "itinerary": {"destination": "杭州"}}],
         paused={"task-9"},
     )
     executor = TravelAgentExecutor(graph)
-    queue = EventQueue()
+    queue = FakeEventQueue()
+    existing_task = type("T", (), {"id": "task-9"})()
 
-    await executor.execute(make_context("杭州", task_id="task-9"), queue)
+    await executor.execute(make_context("杭州", task_id="task-9", current_task=existing_task), queue)
     resumed_input, config = graph.invocations[0]
     assert isinstance(resumed_input, Command) and resumed_input.resume == "杭州"
     assert config["configurable"]["thread_id"] == "task-9"
-
-    events = drain_events(queue)
-    last = events[-1]
-    assert last.status.state == TaskState.completed
+    # resume 场景已有 task，不再重发 Task 事件
+    assert not any(isinstance(e, Task) for e in queue.events)
+    assert any(isinstance(e, TaskArtifactUpdateEvent) for e in queue.events)
+    last = queue.events[-1]
+    assert last.status.state == TaskState.TASK_STATE_COMPLETED
 
 
 async def test_graph_exception_emits_failed():
@@ -1422,10 +1426,10 @@ async def test_graph_exception_emits_failed():
             raise RuntimeError("boom")
 
     executor = TravelAgentExecutor(BoomGraph([]))
-    queue = EventQueue()
+    queue = FakeEventQueue()
     await executor.execute(make_context("hi"), queue)
-    last = drain_events(queue)[-1]
-    assert last.status.state == TaskState.failed
+    last = queue.events[-1]
+    assert last.status.state == TaskState.TASK_STATE_FAILED
     assert "boom" in part_text(last.status.message.parts[0])
 ```
 
@@ -1442,8 +1446,7 @@ from __future__ import annotations
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Part, TextPart
-from a2a.utils.message import get_message_text
+from a2a.types import Part, Task, TaskState, TaskStatus
 from langgraph.types import Command
 
 from app.graph.state import TravelRequest
@@ -1460,15 +1463,16 @@ INITIAL_STATE: dict = {
 
 
 def _text_part(text: str) -> Part:
-    return Part(root=TextPart(text=text))
+    return Part(text=text)
 
 
 class TravelAgentExecutor(AgentExecutor):
-    """把 LangGraph 执行映射为 A2A task 状态：
+    """把 LangGraph 执行映射为 A2A task 状态（a2a-sdk 1.x，task mode）：
 
-    - `__interrupt__` → `input-required`（question 进 message.parts）
+    - 首次调用先入队 `Task`（1.x 要求：TaskStatusUpdateEvent 之前必须有 Task）
+    - `__interrupt__` → `TASK_STATE_INPUT_REQUIRED`（question 进 message.parts）
     - 恢复 → `Command(resume=用户回复)`，`thread_id = A2A task_id`
-    - 完成 → artifact（行程 markdown）+ `completed`
+    - 完成 → artifact（行程 markdown）+ `TASK_STATE_COMPLETED`
     """
 
     def __init__(self, graph):
@@ -1477,10 +1481,18 @@ class TravelAgentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         if context.current_task is None:
-            await updater.submit()
+            await event_queue.enqueue_event(
+                Task(
+                    id=context.task_id,
+                    context_id=context.context_id,
+                    status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED),
+                )
+            )
         await updater.start_work()
 
-        user_text = get_message_text(context.message)
+        user_text = ""
+        if context.message is not None and len(context.message.parts) > 0:
+            user_text = context.message.parts[0].text
         config = {"configurable": {"thread_id": context.task_id}}
         try:
             snapshot = await self.graph.aget_state(config)
@@ -1533,77 +1545,112 @@ git commit -m "feat: a2a executor mapping langgraph interrupt to input-required"
 
 - [ ] **步骤 1：编写失败的测试**
 
-`tests/fakes.py` 追加（A2A 请求构造 helper，任务 10 的 `test_auth.py` 也要复用；`interrupt_result` 已在任务 8 存在）：
+`tests/fakes.py` 追加（A2A 1.0 请求构造 helper，任务 10 的 `test_auth.py` 也要复用；`interrupt_result` 已在任务 8 存在）：
 
 ```python
 import uuid
 
 
 def send_message(text: str, task_id: str | None = None, context_id: str | None = None) -> dict:
-    """构造 message/send JSON-RPC 请求体。"""
+    """构造 1.0 协议 SendMessage JSON-RPC 请求体（需配合 A2A-Version: 1.0 header）。"""
     msg = {
-        "role": "user",
-        "kind": "message",
         "messageId": uuid.uuid4().hex,
-        "parts": [{"kind": "text", "text": text}],
+        "role": "ROLE_USER",
+        "parts": [{"text": text}],
     }
     if task_id:
         msg["taskId"] = task_id
     if context_id:
         msg["contextId"] = context_id
-    return {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "message/send",
+    return {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "SendMessage",
             "params": {"message": msg}}
 ```
 
 `tests/test_main.py`：
 
 ```python
+import uuid
+
 import httpx
 
 from app.main import create_app
 from tests.fakes import FakeGraph, interrupt_result, send_message
 
+V1_HEADERS = {"A2A-Version": "1.0"}
 
-async def test_message_send_completes_with_artifact():
+
+async def test_send_message_completes_with_artifact():
     graph = FakeGraph([{"response_text": "# 杭州 逐日行程", "itinerary": {"destination": "杭州"}}])
     app = create_app(graph=graph)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        resp = await c.post("/a2a/travel-planner/", json=send_message("杭州三日游，预算3000"))
+        resp = await c.post("/a2a", json=send_message("杭州三日游，预算3000"), headers=V1_HEADERS)
     assert resp.status_code == 200
-    result = resp.json()["result"]
-    assert result["status"]["state"] == "completed"
-    assert result["artifacts"][0]["parts"][0]["text"].startswith("# 杭州")
+    task = resp.json()["result"]["task"]
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert task["artifacts"][0]["parts"][0]["text"].startswith("# 杭州")
 
 
-async def test_message_send_input_required_then_resume_same_task():
+async def test_send_message_input_required_then_resume_same_task():
     graph = FakeGraph(
-        [interrupt_result("请补充日期与预算。"), {"response_text": "# OK", "itinerary": {}}],
-        paused={"task-x"},
+        [interrupt_result("请补充日期与预算。"), {"response_text": "# OK", "itinerary": {}}]
     )
     app = create_app(graph=graph)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        r1 = await c.post("/a2a/travel-planner/", json=send_message("我想去杭州"))
-        task = r1.json()["result"]
-        assert task["status"]["state"] == "input-required"
+        r1 = await c.post("/a2a", json=send_message("我想去杭州"), headers=V1_HEADERS)
+        task = r1.json()["result"]["task"]
+        assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
         assert "预算" in task["status"]["message"]["parts"][0]["text"]
         task_id, context_id = task["id"], task["contextId"]
 
-        graph.paused = {task_id}  # 模拟仍停在 interrupt
+        graph.paused = {task_id}  # 模拟仍停在 interrupt 上（aget_state().next 非空）
         r2 = await c.post(
-            "/a2a/travel-planner/",
+            "/a2a",
             json=send_message("10月1日到3日，预算3000", task_id=task_id, context_id=context_id),
+            headers=V1_HEADERS,
         )
-    task2 = r2.json()["result"]
+    task2 = r2.json()["result"]["task"]
     assert task2["id"] == task_id
-    assert task2["status"]["state"] == "completed"
+    assert task2["status"]["state"] == "TASK_STATE_COMPLETED"
+
+
+async def test_v0_3_compat_message_send_and_resume():
+    """0.3 兼容模式（enable_v0_3_compat=True）：无 header + message/send + 0.3 格式。"""
+    graph = FakeGraph([interrupt_result("请补充预算。"), {"response_text": "# OK", "itinerary": {}}])
+
+    def body(text: str, task_id: str | None = None, context_id: str | None = None) -> dict:
+        m = {
+            "messageId": uuid.uuid4().hex,
+            "role": "user",
+            "kind": "message",
+            "parts": [{"kind": "text", "text": text}],
+        }
+        if task_id:
+            m["taskId"] = task_id
+        if context_id:
+            m["contextId"] = context_id
+        return {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "message/send",
+                "params": {"message": m}}
+
+    app = create_app(graph=graph)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        r1 = await c.post("/a2a", json=body("我想去西安"))
+        task = r1.json()["result"]
+        assert task["status"]["state"] == "input-required"
+        task_id, context_id = task["id"], task["contextId"]
+
+        graph.paused = {task_id}
+        r2 = await c.post("/a2a", json=body("预算 5000", task_id=task_id, context_id=context_id))
+    assert r2.json()["result"]["status"]["state"] == "completed"
 
 
 async def test_agent_card_wellknown():
     app = create_app(graph=FakeGraph([]))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        resp = await c.get("/a2a/travel-planner/.well-known/agent-card.json")
+        resp = await c.get("/.well-known/agent-card.json")
     assert resp.status_code == 200
-    assert resp.json()["name"] == "travel-planner-agent"
+    data = resp.json()
+    assert data["name"] == "travel-planner-agent"
+    assert data["supportedInterfaces"][0]["url"].endswith("/a2a")
 ```
 
 - [ ] **步骤 2：运行验证失败**
@@ -1613,32 +1660,35 @@ async def test_agent_card_wellknown():
 
 - [ ] **步骤 3：实现**
 
-`app/agent_card.py`：
+`app/agent_card.py`（a2a-sdk 1.x：AgentCard 为 protobuf，无 url 字段，用 supported_interfaces）：
 
 ```python
-from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+from a2a.types import AgentCard
 
 
 def build_agent_card(base_url: str) -> AgentCard:
-    endpoint = f"{base_url.rstrip('/')}/a2a/travel-planner"
-    return AgentCard(
+    card = AgentCard(
         name="travel-planner-agent",
         description="根据目的地/日期/预算生成真实可执行的逐日旅行方案",
-        url=endpoint,
         version="0.1.0",
-        capabilities=AgentCapabilities(streaming=False),
-        default_input_modes=["text/plain"],
-        default_output_modes=["text/plain"],
-        preferred_transport="JSONRPC",
-        skills=[
-            AgentSkill(
-                id="plan_trip",
-                name="plan_trip",
-                tags=["travel"],
-                description="生成旅行行程，缺少必填信息时会中断询问",
-            )
-        ],
     )
+    iface = card.supported_interfaces.add()
+    iface.url = f"{base_url.rstrip('/')}/a2a"
+    iface.protocol_binding = "JSONRPC"
+    card.capabilities.SetInParent()
+    card.default_input_modes.append("text/plain")
+    card.default_output_modes.append("text/plain")
+
+    scheme = card.security_schemes["bearerAuth"]
+    scheme.http_auth_security_scheme.scheme = "bearer"
+    card.security_requirements.add().schemes["bearerAuth"]
+
+    skill = card.skills.add()
+    skill.id = "plan_trip"
+    skill.name = "plan_trip"
+    skill.description = "生成旅行行程，缺少必填信息时会中断询问"
+    skill.tags.append("travel")
+    return card
 ```
 
 `app/graph/builder.py` 追加（生产装配；测试不触发）：
@@ -1659,19 +1709,23 @@ def default_graph():
     )
 ```
 
-`app/main.py`（本任务不含鉴权，任务 10 接入）：
+`app/main.py`（a2a-sdk 1.x：路由直接挂到 FastAPI 上；本任务不含鉴权，任务 10 接入）：
 
 ```python
 from __future__ import annotations
 
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes.agent_card_routes import create_agent_card_routes
+from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
+from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from fastapi import FastAPI
 
 from app.a2a_adapter import TravelAgentExecutor
 from app.agent_card import build_agent_card
 from app.config import get_settings
+
+A2A_RPC_PATH = "/a2a"
 
 
 def create_app(graph=None) -> FastAPI:
@@ -1682,12 +1736,18 @@ def create_app(graph=None) -> FastAPI:
 
     card = build_agent_card(get_settings().public_base_url)
     handler = DefaultRequestHandler(
-        agent_executor=TravelAgentExecutor(graph), task_store=InMemoryTaskStore()
+        agent_executor=TravelAgentExecutor(graph),
+        task_store=InMemoryTaskStore(),
+        agent_card=card,
     )
-    a2a_asgi = A2AStarletteApplication(agent_card=card, http_handler=handler).build()
-
     app = FastAPI(title="travel-planner-agent")
-    app.mount("/a2a/travel-planner", a2a_asgi)
+    add_a2a_routes_to_fastapi(
+        app,
+        agent_card_routes=create_agent_card_routes(card),
+        jsonrpc_routes=create_jsonrpc_routes(
+            handler, rpc_url=A2A_RPC_PATH, enable_v0_3_compat=True
+        ),
+    )
     return app
 
 
@@ -1699,8 +1759,8 @@ if __name__ == "__main__":
 
 - [ ] **步骤 4：运行验证通过**
 
-运行：`uv run pytest -q`
-预期：全部通过。若 `well-known` 路径 404（SDK 0.2 为 `agent.json`），按安装版本的 `A2AStarletteApplication.routes` 调整断言路径。
+运行：`uv run pytest tests/test_main.py tests/test_a2a_adapter.py -q`
+预期：全部通过（well-known 路径已确认为 `/.well-known/agent-card.json`；0.3 兼容路径由 `enable_v0_3_compat=True` 提供）。
 
 - [ ] **步骤 5：Commit**
 
@@ -1760,7 +1820,7 @@ def test_expired_token_rejected(tmp_path):
 async def test_api_401_without_token(tmp_path):
     app = create_app(graph=FakeGraph([]), auth_store=make_store(tmp_path))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        resp = await c.post("/a2a/travel-planner/", json=send_message("hi"))
+        resp = await c.post("/a2a", json=send_message("hi"), headers={"A2A-Version": "1.0"})
     assert resp.status_code == 401
 
 
@@ -1770,9 +1830,9 @@ async def test_api_200_with_valid_token(tmp_path):
     app = create_app(graph=FakeGraph([{"response_text": "# OK", "itinerary": {}}]), auth_store=store)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
         resp = await c.post(
-            "/a2a/travel-planner/",
+            "/a2a",
             json=send_message("hi"),
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "A2A-Version": "1.0"},
         )
     assert resp.status_code == 200
 
@@ -1780,7 +1840,7 @@ async def test_api_200_with_valid_token(tmp_path):
 async def test_wellknown_exempt_from_auth(tmp_path):
     app = create_app(graph=FakeGraph([]), auth_store=make_store(tmp_path))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        resp = await c.get("/a2a/travel-planner/.well-known/agent-card.json")
+        resp = await c.get("/.well-known/agent-card.json")
     assert resp.status_code == 200
 ```
 
@@ -1890,7 +1950,10 @@ async def _send_401(send):
 
 
 class BearerAuthMiddleware:
-    """纯 ASGI 中间件：保护挂载进来的 A2A Starlette 应用；well-known 发现路径豁免。"""
+    """纯 ASGI 中间件：经 `app.add_middleware()` 注册，保护全部 HTTP 路由；well-known 发现路径豁免。
+
+    1.x 中 A2A 路由直接挂在 FastAPI 上，scope["path"] 为完整路径，故豁免前缀直接用 "/.well-known"。
+    """
 
     def __init__(self, app, store: TokenStore, exempt_prefixes: tuple[str, ...] = ("/.well-known",)):
         self.app = app
@@ -1920,9 +1983,9 @@ from app.auth import BearerAuthMiddleware, TokenStore
     if auth_store is None:
         auth_store = TokenStore(get_settings().auth_db_path)
     ...
-    a2a_asgi = A2AStarletteApplication(agent_card=card, http_handler=handler).build()
-    a2a_asgi = BearerAuthMiddleware(a2a_asgi, auth_store)
-    app.mount("/a2a/travel-planner", a2a_asgi)
+    add_a2a_routes_to_fastapi(app, ...)  # 任务 9 已接入
+    app.add_middleware(BearerAuthMiddleware, store=auth_store)
+    return app
 ```
 
 **同步更新任务 9 的 API 测试**：`create_app` 未显式传 `auth_store` 时会按 Settings 创建真实 TokenStore，未带 token 的请求将得到 401。因此给 `test_main.py` 注入临时 store 并携带 token（`test_agent_card_wellknown` 走豁免路径，无需改动）：
@@ -1939,25 +2002,26 @@ def auth(tmp_path):
     return store, store.issue("it")
 
 
-# test_message_send_completes_with_artifact 与
-# test_message_send_input_required_then_resume_same_task 两个测试
+# test_send_message_completes_with_artifact、
+# test_send_message_input_required_then_resume_same_task、
+# test_v0_3_compat_message_send_and_resume 三个测试
 # 签名加 auth 参数，create_app 传 auth_store=store，每次 c.post 加 headers。
-# 以第一个为例（第二个做同样处理）：
+# 以第一个为例（其余做同样处理；0.3 测试保持不带 A2A-Version header）：
 
-async def test_message_send_completes_with_artifact(auth):
+async def test_send_message_completes_with_artifact(auth):
     store, token = auth
     graph = FakeGraph([{"response_text": "# 杭州 逐日行程", "itinerary": {"destination": "杭州"}}])
     app = create_app(graph=graph, auth_store=store)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
         resp = await c.post(
-            "/a2a/travel-planner/",
+            "/a2a",
             json=send_message("杭州三日游，预算3000"),
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "A2A-Version": "1.0"},
         )
     assert resp.status_code == 200
-    result = resp.json()["result"]
-    assert result["status"]["state"] == "completed"
-    assert result["artifacts"][0]["parts"][0]["text"].startswith("# 杭州")
+    task = resp.json()["result"]["task"]
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert task["artifacts"][0]["parts"][0]["text"].startswith("# 杭州")
 ```
 
 `scripts/issue_token.py`：
@@ -2018,9 +2082,11 @@ git commit -m "feat: bearer token auth with sqlite store and asgi middleware"
 
 ```python
 """A2A 手工测试客户端：模拟"部分信息 → input-required → 补充 → resume"完整往返。
+
 用法：
   uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000   # 终端 1
   uv run python scripts/a2a_client_demo.py --base http://127.0.0.1:8000 --token <TOKEN>  # 终端 2
+  # 可选：--protocol v03 走 0.3 兼容路径（无 A2A-Version header + message/send 方法）
 """
 
 import argparse
@@ -2032,46 +2098,47 @@ TIMEOUT = 300.0
 
 
 def send(base: str, token: str, text: str, task_id: str | None = None,
-         context_id: str | None = None) -> dict:
-    msg = {
-        "role": "user",
-        "kind": "message",
-        "messageId": uuid.uuid4().hex,
-        "parts": [{"kind": "text", "text": text}],
-    }
+         context_id: str | None = None, protocol: str = "v1") -> dict:
+    if protocol == "v1":
+        msg = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER", "parts": [{"text": text}]}
+        method = "SendMessage"
+        headers = {"Authorization": f"Bearer {token}", "A2A-Version": "1.0"}
+    else:
+        msg = {
+            "messageId": uuid.uuid4().hex,
+            "role": "user",
+            "kind": "message",
+            "parts": [{"kind": "text", "text": text}],
+        }
+        method = "message/send"
+        headers = {"Authorization": f"Bearer {token}"}
     if task_id:
         msg["taskId"] = task_id
     if context_id:
         msg["contextId"] = context_id
-    payload = {
-        "jsonrpc": "2.0",
-        "id": uuid.uuid4().hex,
-        "method": "message/send",
-        "params": {"message": msg},
-    }
-    resp = httpx.post(
-        f"{base}/a2a/travel-planner",
-        json=payload,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=TIMEOUT,
-        follow_redirects=True,  # Mount 对无尾斜杠路径可能 307
-    )
+    payload = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method,
+               "params": {"message": msg}}
+    resp = httpx.post(f"{base}/a2a", json=payload, headers=headers, timeout=TIMEOUT)
     resp.raise_for_status()
-    return resp.json()["result"]
+    result = resp.json()["result"]
+    return result.get("task", result)  # 1.0 嵌在 result.task 下；0.3 平铺
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="a2a demo client")
     parser.add_argument("--base", default="http://127.0.0.1:8000")
     parser.add_argument("--token", required=True)
+    parser.add_argument("--protocol", choices=["v1", "v03"], default="v1")
     args = parser.parse_args()
 
-    task = send(args.base, args.token, "我想出去玩，帮规划一下")  # 只给模糊需求
-    while task["status"]["state"] == "input-required":
+    input_required = "TASK_STATE_INPUT_REQUIRED" if args.protocol == "v1" else "input-required"
+    task = send(args.base, args.token, "我想出去玩，帮规划一下", protocol=args.protocol)
+    while task["status"]["state"] == input_required:
         question = task["status"]["message"]["parts"][0]["text"]
         print(f"\nAGENT: {question}")
         reply = input("YOU> ").strip()
-        task = send(args.base, args.token, reply, task_id=task["id"], context_id=task["contextId"])
+        task = send(args.base, args.token, reply, task_id=task["id"],
+                    context_id=task["contextId"], protocol=args.protocol)
 
     print(f"\n最终状态: {task['status']['state']}")
     for artifact in task.get("artifacts", []):
@@ -2127,7 +2194,7 @@ uv run ruff check app tests scripts
 | 1 只给目的地 → 中断追问 | `test_multi_round_interrupt_merges_incrementally` |
 | 2 多轮补全不丢字段 | `test_state.py` + 同上集成测试 |
 | 3 MCP 失败有兜底不裸抛 | `test_build_itinerary_degrades_when_mcp_fails` |
-| 4 识别 input-required 并 resume 同 task | `test_message_send_input_required_then_resume_same_task` |
+| 4 识别 input-required 并 resume 同 task | `test_send_message_input_required_then_resume_same_task`（1.0）+ `test_v0_3_compat_message_send_and_resume`（0.3 兼容） |
 | 5 同 task 连续 2+ 次中断-恢复不串线 | 任务 4（2 轮）+ `test_budget_overrun_gives_up_after_two_adjusts`（3 轮）+ demo 实测 |
 | 6 无效/撤销 token 拒绝 401 | `test_api_401_without_token` / `test_revoke_rejects_token` |
 | 7 行程含真实景点/天气/每日花费 | demo 客户端 + 真实 Key 人工验收；`data_verified` 标记佐证 |
