@@ -2345,3 +2345,19 @@ git commit -m "docs: add a2a demo client and readme with acceptance mapping"
 3. **a2a-sdk / mcp 版本差异**：任务 5/8/9/10/11 的代码已按实测 API 写好（见全局约束的版本兼容注意）；若仍遇报错，以安装版本源码为准做等价调整，并在 commit message 中注明适配点。
 4. **真实 Key 冒烟**：任务 5 步骤 4 与任务 11 步骤 3 需要有效的高德 Key 与 LLM Key；其余任务全部离线可跑。
 5. **checkpointer 三件套（任务 3/6 实测）**：① 图用 `ainvoke`/`aget_state` 时同步 `SqliteSaver` 会报 `NotImplementedError`——必须用 `AsyncSqliteSaver`（工厂 `make_async_sqlite_checkpointer`）；② 显式 serde 白名单必须登记每一个写入状态的自定义类型（`TravelRequest`、`Itinerary`），漏登记会被静默阻断并降级为 dict（`Blocked deserialization` 只在 log 里，pytest 不报 warning）；③ 测试必须经 conftest 的 `checkpointer` fixture 关闭连接，否则 aiosqlite 工作线程会挂住测试进程（表现为命令不返回）。
+
+---
+
+## 最终审查修订记录（11 个任务完成后）
+
+最终分支级审查（`89e26a8..a86d20b`，31 个提交）返回 6 条 Important 发现，经**一轮统一修复**（提交 `b5271a8`）与**一次定向复审**（A–G 逐条 ADDRESSED）后全部解决。本节记录这些修订的最终形态——上文各任务的代码块是修订**前**的历史快照，若与之冲突，以实现（git 历史）为准：
+
+1. **餐饮/住宿 POI（任务 6）**：`make_build_itinerary` 现共 5 次 MCP 调用（weather / geo / 景点 POI / 餐厅 POI / 酒店 POI），后两者以【餐厅 POI】【酒店 POI】标签并入 `context_text`（落实 PLAN 6「不能仅靠 LLM 编造」）；`FakeMCP.calls` 记录 `(方法, 关键字)` 元组以区分三次搜索。
+2. **executor ↔ 真实图接缝测试（任务 9）**：`tests/test_main.py::test_real_graph_multi_round_resume_via_api` 用真实图 + 真实 A2A handler 跑同一 task 三轮（`INPUT_REQUIRED → INPUT_REQUIRED → COMPLETED`），断言 task id 全程一致与 artifact。
+3. **第二类中断问句（任务 7）**：改为「预估总花费 X 元，超出预算 (X - budget) 元（预算 budget 元）」——原实现误把预算额写成超出额；payload 结构不变。
+4. **resume 解析容错（任务 7）**：新增 `_apply_budget_adjust`，`budget=` / `days=` 解析失败按 `keep` 处理，不再让非法输入把任务打成永久 `failed`。
+5. **必填校验语义（任务 2/3）**：`missing_fields` 现拒绝 `budget <= 0` 与日期倒挂（`end_date < start_date` 计入 `end_date` 缺失），避免下游 `days <= 0` 触发 `ZeroDivisionError` 或负预算入 prompt。
+6. **过期回归测试（任务 10）**：`test_offset_expired_token_rejected` 改用「本地串序大于 now 串、但真实时刻已过去」的构造（`now - 30min` 转 `+13:00`），可真正区分解析比较与旧的字符串字典序实现。
+7. **卫生项**：依赖下界收至 `a2a-sdk>=1.1`、`mcp>=2.2`；`filterwarnings` 定向锚定 a2a 告警（非全局 ignore）；`.gitignore` 补 `.pytest_cache/`、`.ruff_cache/`；`test_agent_card_wellknown` 改传临时 store（不再落盘真实 `data/tokens.db`）；0.3 兼容测试补 `task2["id"] == task_id`；README 补 `--protocol v03`、`data/` 首启创建与 `InMemoryTaskStore` 重启语义。
+
+**残留 Minor（已裁定不再修复，留给后续）**：README 的重启语义措辞与 SDK 实际行为不符（`InMemoryTaskStore` 重启后带原 `task_id` 会返回 TaskNotFound，即使图状态仍在 checkpoints.db）；`days=` 解析未吞 `OverflowError`；预算调整阶段的负数输入（`days=-3`、`budget=-5000`）仍可能触发 `ZeroDivisionError` 或负预算；`test_build_itinerary` 未断言上下文标签。
