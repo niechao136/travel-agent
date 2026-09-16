@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from app.graph.builder import make_async_sqlite_checkpointer
 from app.graph.state import TravelRequestUpdate
-
-
-def sqlite_checkpointer():
-    """每个测试用独立 :memory: SQLite（AsyncSqliteSaver），保证隔离且不写 data/ 目录。"""
-    return make_async_sqlite_checkpointer(":memory:")
 
 
 class FakeExtractor:

@@ -3,11 +3,11 @@ from datetime import date
 from langgraph.types import Command
 
 from app.graph.builder import build_graph
-from app.graph.state import TravelRequest, TravelRequestUpdate
-from tests.fakes import FakeExtractor, FakeMCP, FakeSummarizer, make_itinerary, sqlite_checkpointer
+from app.graph.state import Itinerary, TravelRequest, TravelRequestUpdate
+from tests.fakes import FakeExtractor, FakeMCP, FakeSummarizer, make_itinerary
 
 
-async def test_multi_round_interrupt_merges_incrementally():
+async def test_multi_round_interrupt_merges_incrementally(checkpointer):
     ex = FakeExtractor(
         [
             TravelRequestUpdate(destination="杭州"),
@@ -19,7 +19,7 @@ async def test_multi_round_interrupt_merges_incrementally():
         extractor=ex,
         summarizer=FakeSummarizer(make_itinerary()),
         mcp=FakeMCP(),
-        checkpointer=sqlite_checkpointer(),
+        checkpointer=checkpointer,
     )
     config = {"configurable": {"thread_id": "t-loop"}}
 
@@ -40,3 +40,8 @@ async def test_multi_round_interrupt_merges_incrementally():
     assert r3["request"].end_date == date(2026, 10, 3)
     assert "__interrupt__" not in r3  # 信息齐全 → build_itinerary → END
     assert r3["itinerary"].data_verified is True  # 图确实走到了取真实数据的节点
+
+    # checkpoint 往返：Itinerary 必须命中 serde allowlist，否则会被静默降级为裸 dict
+    snapshot = await graph.aget_state(config)
+    assert isinstance(snapshot.values["itinerary"], Itinerary)
+    assert snapshot.values["itinerary"].data_verified is True

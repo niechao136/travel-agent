@@ -16,7 +16,10 @@ from app.graph.nodes import (
 )
 from app.graph.state import GraphState
 
-ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [("app.graph.state", "TravelRequest")]
+ALLOWED_MSGPACK_MODULES: list[tuple[str, str]] = [
+    ("app.graph.state", "TravelRequest"),
+    ("app.graph.state", "Itinerary"),
+]
 
 
 def make_async_sqlite_checkpointer(db_path: str) -> AsyncSqliteSaver:
