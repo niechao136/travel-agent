@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -26,10 +27,12 @@ class AmapMCPClient:
 
     @asynccontextmanager
     async def _default_session_factory(self) -> AsyncIterator[ClientSession]:
-        async with streamable_http_client(self.url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                yield session
+        async with (
+            streamable_http_client(self.url) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            yield session
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         async with self._session_factory() as session:

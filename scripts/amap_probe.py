@@ -13,12 +13,14 @@ from mcp.client.streamable_http import streamable_http_client
 async def main() -> None:
     load_dotenv()
     url = os.environ["AMAP_MCP_URL"]
-    async with streamable_http_client(url) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            for t in tools.tools:
-                print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
+    async with (
+        streamable_http_client(url) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        for t in tools.tools:
+            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
 
 
 if __name__ == "__main__":

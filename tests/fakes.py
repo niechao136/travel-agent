@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
-
 from app.graph.builder import make_async_sqlite_checkpointer
-from app.graph.state import TravelRequest, TravelRequestUpdate
+from app.graph.state import TravelRequestUpdate
 
 
 def sqlite_checkpointer():
