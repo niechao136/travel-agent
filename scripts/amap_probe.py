@@ -20,7 +20,7 @@ async def main() -> None:
         await session.initialize()
         tools = await session.list_tools()
         for t in tools.tools:
-            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.inputSchema}")
+            print(f"\n=== {t.name} ===\n{t.description}\nparams: {t.input_schema}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from langgraph.types import interrupt
@@ -54,7 +54,7 @@ def make_extract_and_merge(extractor):
         user_text = _last_user_text(state["messages"])
         if not user_text:
             return {}
-        update = await extractor(user_text, datetime.now(tz=UTC).date().isoformat())
+        update = await extractor(user_text, datetime.now().astimezone().date().isoformat())
         return {"request": merge_request(state["request"], update)}
 
     return extract_and_merge
