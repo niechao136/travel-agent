@@ -541,7 +541,7 @@ EXTRACTION_PROMPT = """你是旅行信息抽取助手。今天是 {today}。
 4. preferences 输出偏好标签列表（如 ["自然", "美食"]）；未提到时输出 null。"""
 ```
 
-`app/llm.py`（真 LLM 适配器；本任务不单测，端到端由任务 11 验证）：
+`app/llm.py`（真 LLM 适配器——本任务只实现抽取侧；行程汇总侧 `llm_summarizer` 依赖 `Itinerary` 模型，由任务 6 追加到本文件。本任务不单测，端到端由任务 11 验证）：
 
 ```python
 from __future__ import annotations
@@ -551,8 +551,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.config import get_settings
-from app.graph.prompts import EXTRACTION_PROMPT, ITINERARY_PROMPT
-from app.graph.state import Itinerary, TravelRequest, TravelRequestUpdate
+from app.graph.prompts import EXTRACTION_PROMPT
+from app.graph.state import TravelRequestUpdate
 
 
 def get_llm() -> BaseChatModel:
@@ -576,26 +576,6 @@ def llm_extractor(llm: BaseChatModel):
         return await llm.with_structured_output(TravelRequestUpdate).ainvoke(messages)
 
     return extractor
-
-
-def llm_summarizer(llm: BaseChatModel):
-    """协议：async (context_text, request) -> Itinerary（任务 6 接入）"""
-
-    async def summarizer(context_text: str, request: TravelRequest) -> Itinerary:
-        days = (request.end_date - request.start_date).days + 1
-        daily_budget = round(request.budget / days, 2)
-        prompt = ITINERARY_PROMPT.format(
-            destination=request.destination,
-            start=request.start_date.isoformat(),
-            end=request.end_date.isoformat(),
-            days=days,
-            daily_budget=daily_budget,
-            preferences="、".join(request.preferences) or "无",
-            mcp_data=context_text,
-        )
-        return await llm.with_structured_output(Itinerary).ainvoke([HumanMessage(content=prompt)])
-
-    return summarizer
 ```
 
 `app/graph/nodes.py` 追加：
@@ -870,7 +850,7 @@ git commit -m "feat: amap mcp client over streamable http with probe script"
 ### 任务 6：build_itinerary（真实数据 + 失败兜底）
 
 **文件：**
-- 修改：`app/graph/state.py`（追加 Itinerary 模型）、`app/graph/nodes.py`、`app/graph/builder.py`、`tests/fakes.py`
+- 修改：`app/graph/state.py`（追加 Itinerary 模型）、`app/graph/prompts.py`（追加 ITINERARY_PROMPT）、`app/llm.py`（追加 llm_summarizer）、`app/graph/nodes.py`、`app/graph/builder.py`、`tests/fakes.py`
 - 创建：`tests/test_build_itinerary.py`
 
 - [ ] **步骤 1：编写失败的测试**
@@ -1011,6 +991,49 @@ class Itinerary(BaseModel):
     total_est_cost_cny: float = 0.0
     data_verified: bool = False
     warnings: list[str] = Field(default_factory=list)
+```
+
+`app/graph/prompts.py` 追加：
+
+```python
+ITINERARY_PROMPT = """你是行程规划师。请基于下方真实地图数据，生成 {destination} 的逐日行程。
+出行：{start} 至 {end}（共 {days} 天），偏好：{preferences}。
+每日预算上限：{daily_budget} 元/天。餐饮住宿档次须符合该预算；若地图数据显示无法满足，在 warnings 中说明。
+
+【真实地图数据（MCP 工具返回）】
+{mcp_data}
+
+要求：
+1. 景点名称必须来自地图数据中的 POI，不得编造。
+2. 每天安排 2-4 个游览点 + 餐饮，标注 est_cost_cny 预估花费。
+3. daily_est_cost_cny 为当日各项之和；total_est_cost_cny 为全部天数之和。"""
+```
+
+`app/llm.py` 追加（行程汇总侧；任务 4 已建立本文件与 `get_llm`/`llm_extractor`，`HumanMessage` 等 import 已在顶部，无需重复）：
+
+```python
+from app.graph.prompts import ITINERARY_PROMPT
+from app.graph.state import Itinerary, TravelRequest
+
+
+def llm_summarizer(llm):
+    """协议：async (context_text, request) -> Itinerary"""
+
+    async def summarizer(context_text: str, request: TravelRequest) -> Itinerary:
+        days = (request.end_date - request.start_date).days + 1
+        daily_budget = round(request.budget / days, 2)
+        prompt = ITINERARY_PROMPT.format(
+            destination=request.destination,
+            start=request.start_date.isoformat(),
+            end=request.end_date.isoformat(),
+            days=days,
+            daily_budget=daily_budget,
+            preferences="、".join(request.preferences) or "无",
+            mcp_data=context_text,
+        )
+        return await llm.with_structured_output(Itinerary).ainvoke([HumanMessage(content=prompt)])
+
+    return summarizer
 ```
 
 `app/graph/nodes.py` 追加：
