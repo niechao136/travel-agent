@@ -1873,11 +1873,9 @@ git commit -m "feat: fastapi app exposing a2a jsonrpc endpoint with agent card"
 - [ ] **步骤 1：编写失败的测试 tests/test_auth.py**
 
 ```python
-import uuid
-
 import httpx
 
-from app.auth import BearerAuthMiddleware, TokenStore
+from app.auth import TokenStore
 from app.main import create_app
 from tests.fakes import FakeGraph, send_message
 
@@ -2081,7 +2079,7 @@ from app.auth import BearerAuthMiddleware, TokenStore
     return app
 ```
 
-**同步更新任务 9 的 API 测试**：`create_app` 未显式传 `auth_store` 时会按 Settings 创建真实 TokenStore，未带 token 的请求将得到 401。因此给 `test_main.py` 注入临时 store 并携带 token（`test_agent_card_wellknown` 走豁免路径，无需改动）：
+**同步更新任务 9 的 API 测试**：`create_app` 未显式传 `auth_store` 时会按 Settings 创建真实 TokenStore，未带 token 的请求将得到 401。因此给 `test_main.py` 注入临时 store 并携带 token（`test_agent_card_wellknown` 走豁免路径，无需改动）；三个 POST 测试改为显式写 headers 后，任务 9 定义的 `V1_HEADERS` 常量不再被使用，**一并删除**（否则 ruff F841/死代码会破坏门禁）：
 
 ```python
 import pytest
@@ -2125,6 +2123,11 @@ async def test_send_message_completes_with_artifact(auth):
 """
 
 import argparse
+import sys
+from pathlib import Path
+
+# 以脚本方式直接运行时（python scripts/issue_token.py）项目根不在 sys.path，补上以便 import app
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.auth import TokenStore
 from app.config import get_settings
