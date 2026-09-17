@@ -1,6 +1,16 @@
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
-from a2a.types import Task, TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent
+from a2a.server.agent_execution import RequestContext
+from a2a.types import (
+    Message,
+    Part,
+    Role,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatusUpdateEvent,
+)
 from langgraph.types import Command
 
 from app.a2a_adapter import TravelAgentExecutor
@@ -56,6 +66,33 @@ async def test_graph_exception_emits_failed():
     last = queue.events[-1]
     assert last.status.state == TaskState.TASK_STATE_FAILED
     assert "boom" in part_text(last.status.message.parts[0])
+
+
+def _gateway_style_context(text: str) -> RequestContext:
+    """模拟网关的消息形态：非文本 part 在前、text part 在后。"""
+    message = Message(
+        role=Role.ROLE_USER,
+        parts=[Part(media_type="application/json"), Part(text=text)],
+        message_id="m-1",
+        context_id="task-1",
+        task_id="task-1",
+    )
+    fake: Any = SimpleNamespace(
+        task_id="task-1", context_id="task-1", current_task=None, message=message
+    )
+    return cast(RequestContext, fake)
+
+
+async def test_gateway_multipart_message_reads_text_part_not_first_part():
+    """a2a-gateway 同时发送 data part 与 text part，取 parts[0] 会读到空串。"""
+    graph = FakeGraph([interrupt_result("请补充目的地。")])
+    executor = TravelAgentExecutor(graph)
+    queue = FakeEventQueue()
+
+    await executor.execute(_gateway_style_context("帮我规划杭州三日游"), queue)
+
+    first_input = graph.invocations[0][0]
+    assert first_input["messages"][0]["content"] == "帮我规划杭州三日游"
 
 
 async def test_multi_round_input_required_then_resume_completes():

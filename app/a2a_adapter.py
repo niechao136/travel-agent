@@ -3,7 +3,7 @@ from __future__ import annotations
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Part, Task, TaskState, TaskStatus
+from a2a.types import Message, Part, Task, TaskState, TaskStatus
 from langgraph.types import Command
 
 from app.graph.state import GraphState, TravelRequest
@@ -21,6 +21,20 @@ INITIAL_STATE: GraphState = {
 
 def _text_part(text: str) -> Part:
     return Part(text=text)
+
+
+def extract_user_text(message: Message | None) -> str:
+    """取用户文本：按 AgentCard 声明的 text/plain 输入模式挑选 part。
+
+    调用方（如 a2a-gateway）可能同时发送 data part 与 text part 且顺序不定，
+    不能假定 parts[0] 就是文本，否则会读到空串而误判为"信息不足"。
+    """
+    if message is None:
+        return ""
+    for part in message.parts:
+        if part.HasField("text") and part.text.strip():
+            return part.text
+    return ""
 
 
 class TravelAgentExecutor(AgentExecutor):
@@ -50,9 +64,7 @@ class TravelAgentExecutor(AgentExecutor):
             )
         await updater.start_work()
 
-        user_text = ""
-        if context.message is not None and len(context.message.parts) > 0:
-            user_text = context.message.parts[0].text
+        user_text = extract_user_text(context.message)
         config = {"configurable": {"thread_id": task_id}}
         try:
             snapshot = await self.graph.aget_state(config)
