@@ -178,3 +178,25 @@ async def test_real_graph_multi_round_resume_via_api(checkpointer, auth):
         assert task3["status"]["state"] == "TASK_STATE_COMPLETED"
         assert task3["artifacts"]
         assert task3["artifacts"][0]["parts"][0]["text"].startswith("# 杭州")
+
+
+async def test_agent_card_legacy_wellknown_path(auth):
+    """A2A 0.3 的发现路径与 1.0 返回同一张卡片（按请求 Host 补全地址）。"""
+    store, _token = auth
+    app = create_app(graph=FakeGraph([]), auth_store=store)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.get("/.well-known/agent.json")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "travel-planner-agent"
+    assert data["supportedInterfaces"][0]["url"] == "http://t/a2a"
+
+
+async def test_healthz_is_public(auth):
+    """存活探针无需鉴权：不携带 token 也应 200。"""
+    store, _token = auth
+    app = create_app(graph=FakeGraph([]), auth_store=store)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}

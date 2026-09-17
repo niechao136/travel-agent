@@ -112,12 +112,13 @@ async def _send_401(send):
 
 
 class BearerAuthMiddleware:
-    """纯 ASGI 中间件：经 `app.add_middleware()` 注册，保护全部 HTTP 路由；well-known 发现路径豁免。
+    """纯 ASGI 中间件：经 `app.add_middleware()` 注册，保护全部 HTTP 路由；发现与探活路径豁免。
 
-    1.x 中 A2A 路由直接挂在 FastAPI 上，scope["path"] 为完整路径，故豁免前缀直接用 "/.well-known"。
+    1.x 中 A2A 路由直接挂在 FastAPI 上，scope["path"] 为完整路径，故豁免前缀直接用 "/.well-known"；
+    "/healthz" 为存活探针（容器编排需要匿名可探，参见 app/main.py）。
     """
 
-    def __init__(self, app, store: TokenStore, exempt_prefixes: tuple[str, ...] = ("/.well-known",)):
+    def __init__(self, app, store: TokenStore, exempt_prefixes: tuple[str, ...] = ("/.well-known", "/healthz")):
         self.app = app
         self.store = store
         self.exempt_prefixes = exempt_prefixes

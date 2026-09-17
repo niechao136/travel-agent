@@ -31,10 +31,23 @@ def create_app(graph=None, auth_store: TokenStore | None = None) -> FastAPI:
     )
     app = FastAPI(title="travel-planner-agent")
 
-    @app.get("/.well-known/agent-card.json")
-    async def agent_card_well_known(request: Request) -> JSONResponse:
+    def _card_response(request: Request) -> JSONResponse:
         """对外卡片按请求的 Host/Scheme 补全绝对地址，免配置且适配任意域名/端口。"""
         return JSONResponse(agent_card_to_dict(build_agent_card(str(request.base_url))))
+
+    @app.get("/.well-known/agent-card.json")
+    async def agent_card_well_known(request: Request) -> JSONResponse:
+        return _card_response(request)
+
+    @app.get("/.well-known/agent.json")
+    async def agent_card_well_known_legacy(request: Request) -> JSONResponse:
+        """A2A 0.3 的发现路径，兼容仍按旧路径取卡片的网关。"""
+        return _card_response(request)
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        """存活探针：不建图、不查库，仅确认进程可用（鉴权中间件已豁免）。"""
+        return {"status": "ok"}
 
     add_a2a_routes_to_fastapi(
         app,

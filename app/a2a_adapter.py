@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+
+from a2a.helpers.proto_helpers import new_data_part
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
@@ -7,6 +10,8 @@ from a2a.types import Message, Part, Task, TaskState, TaskStatus
 from langgraph.types import Command
 
 from app.graph.state import GraphState, TravelRequest
+
+logger = logging.getLogger(__name__)
 
 INITIAL_STATE: GraphState = {
     "request": TravelRequest(),
@@ -21,6 +26,10 @@ INITIAL_STATE: GraphState = {
 
 def _text_part(text: str) -> Part:
     return Part(text=text)
+
+
+def _data_part(payload: dict[str, object]) -> Part:
+    return new_data_part(payload, media_type="application/json")
 
 
 def extract_user_text(message: Message | None) -> str:
@@ -74,8 +83,17 @@ class TravelAgentExecutor(AgentExecutor):
                 initial = {**INITIAL_STATE, "messages": [{"role": "user", "content": user_text}]}
                 result = await self.graph.ainvoke(initial, config)
         except Exception as exc:  # noqa: BLE001 —— 兜底：任何内部错误映射为 task failed
+            logger.exception("生成行程失败 task_id=%s", task_id)
             await updater.failed(
-                message=updater.new_agent_message(parts=[_text_part(f"生成行程失败：{exc}")])
+                message=updater.new_agent_message(
+                    parts=[
+                        _text_part(f"生成行程失败：{exc}"),
+                        # 结构化错误（稳定错误码 + retryable），便于调用方决策是否重试
+                        _data_part(
+                            {"error": "internal_error", "message": str(exc), "retryable": True}
+                        ),
+                    ]
+                )
             )
             return
 
