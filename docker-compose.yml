@@ -1,0 +1,27 @@
+services:
+  travel-agent:
+    build:
+      context: .
+    image: travel-agent:0.1.0
+    container_name: travel-agent
+    restart: unless-stopped
+    env_file:
+      # 由 .env.example 复制而来；缺失时不阻塞启动（但缺 OPENAI_API_KEY 会启动失败）
+      - path: .env
+        required: false
+    ports:
+      # 宿主机 10101 -> 容器 8000
+      - "10101:8000"
+    volumes:
+      # 直接挂载宿主机 ./data：checkpoints.db / tokens.db 落盘到此，容器重建不丢状态
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/.well-known/agent-card.json', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -1,0 +1,18 @@
+# 构建上下文瘦身：只保留 app/ scripts/ pyproject.toml uv.lock
+.git
+.gitignore
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+.codebuddy/
+docs/
+tests/
+data/
+.env
+.env.example
+Dockerfile
+docker-compose.yml
+*.md

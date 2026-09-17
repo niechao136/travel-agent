@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
     amap_mcp_url: str = "https://mcp.amap.com/mcp"
-    public_base_url: str = "http://127.0.0.1:8000"
     checkpoint_db_path: str = "./data/checkpoints.db"
     auth_db_path: str = "./data/tokens.db"
 

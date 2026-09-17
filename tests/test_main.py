@@ -117,7 +117,8 @@ async def test_agent_card_wellknown(auth):
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "travel-planner-agent"
-    assert data["supportedInterfaces"][0]["url"].endswith("/a2a")
+    # 地址由请求的 Host/Scheme 推导，不再依赖 PUBLIC_BASE_URL
+    assert data["supportedInterfaces"][0]["url"] == "http://t/a2a"
 
 
 async def test_real_graph_multi_round_resume_via_api(checkpointer, auth):
