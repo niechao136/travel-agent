@@ -24,7 +24,33 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
     "ruff>=0.6",
+    "basedpyright>=1.40.1",
 ]
+
+# ---------------------------------------------------------------------------
+# Type checking -- run with: uv run basedpyright
+#
+# `standard` 模式保留所有能捕获真实缺陷的规则（参数/返回值/赋值类型、Optional
+# 访问、未绑定变量、未使用的导入与变量、已弃用 API ...），要求 0 error。
+#
+# 下面关闭的是"类型完备性"规则：它们会在刻意的动态互操作处报错，强行满足只会
+# 产生大量无意义的 `Any` 注解：
+#   * LangGraph 编译后的图、LangChain Runnable 本身是动态类型
+#   * a2a-sdk 的 protobuf `Struct` payload 按设计承载任意 JSON
+#   * 第三方库的类型存根不完整或缺失
+# ---------------------------------------------------------------------------
+[tool.basedpyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.11"
+include = ["app", "tests", "scripts"]
+exclude = ["**/__pycache__", "**/.venv/**", ".cache", "**/node_modules/**"]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
